@@ -1,0 +1,76 @@
+name: Generate Kinetic Reel
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Sujet de la vidéo ou brief'
+        required: true
+        default: 'Pourquoi le café de spécialité coûte si cher'
+      duration:
+        description: 'Durée en secondes'
+        required: true
+        default: '30'
+      voice:
+        description: 'Voix (Puck, Aoede, Fenrir, Charon, Kore)'
+        required: true
+        default: 'Puck'
+      chat_id:
+        description: 'Telegram Chat ID (pour recevoir la vidéo sur votre téléphone)'
+        required: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install system dependencies (FFmpeg & Chromium)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg chromium-browser fonts-inter fonts-liberation
+
+      - name: Install NPM dependencies
+        run: npm install
+
+      - name: Generate Reel
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+          PUPPETEER_EXECUTABLE_PATH: "/usr/bin/chromium-browser"
+        run: |
+          node create-reel.mjs \
+            --topic "${{ github.event.inputs.topic }}" \
+            --duration ${{ github.event.inputs.duration }} \
+            --voice "${{ github.event.inputs.voice }}" \
+            --output "render-raw.mp4"
+
+      - name: Optimize video for mobile
+        run: |
+          ffmpeg -y -i render-raw.mp4 -c:v libx264 -crf 23 -preset veryfast -c:a aac -b:a 160k final-reel.mp4
+
+      - name: Upload video as GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kinetic-reel-video
+          path: final-reel.mp4
+
+      - name: Send video to Telegram
+        if: ${{ github.event.inputs.chat_id != '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ github.event.inputs.chat_id }}
+          TOPIC: ${{ github.event.inputs.topic }}
+          VOICE: ${{ github.event.inputs.voice }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F chat_id="${CHAT_ID}" \
+            -F video=@final-reel.mp4 \
+            -F supports_streaming=true \
+            -F caption="🎬 *${TOPIC}* (Voix: ${VOICE}) - Vidéo 1080x1920 générée avec succès sur GitHub Cloud !"

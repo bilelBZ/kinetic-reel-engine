@@ -1,0 +1,7 @@
+.env
+node_modules/
+scratch/
+.hyperframes/
+*.mp4
+*.wav
+*.pcm

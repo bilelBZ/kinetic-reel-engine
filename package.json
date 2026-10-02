@@ -1,0 +1,13 @@
+{
+  "name": "kinetic-reel-engine",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Automated Kinetic Editorial Reel generator with Google AI Studio voices and HyperFrames",
+  "main": "create-reel.mjs",
+  "bin": {
+    "create-reel": "./create-reel.mjs"
+  },
+  "scripts": {
+    "start": "node create-reel.mjs"
+  }
+}

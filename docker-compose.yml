@@ -1,0 +1,9 @@
+services:
+  kinetic-bot:
+    build: .
+    restart: always
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    volumes:
+      - ./scratch:/app/scratch
