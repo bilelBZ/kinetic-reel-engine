@@ -11,6 +11,7 @@
     "start": "node create-reel.mjs"
   },
   "dependencies": {
-    "hyperframes": "^0.8.111"
+    "hyperframes": "^0.8.111",
+    "msedge-tts": "^2.0.8"
   }
 }

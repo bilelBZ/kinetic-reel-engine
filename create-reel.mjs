@@ -27,6 +27,7 @@ function parseArgs() {
     apiKey: null,
     output: null,
     skipRender: false,
+    style: "fares-editorial",
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -35,6 +36,7 @@ function parseArgs() {
     else if (arg === "--duration" || arg === "-d") params.duration = Number(args[++i]);
     else if (arg === "--voice" || arg === "-v") params.voice = args[++i];
     else if (arg === "--lang" || arg === "-l") params.lang = args[++i];
+    else if (arg === "--style" || arg === "-s") params.style = args[++i];
     else if (arg === "--key" || arg === "-k") params.apiKey = args[++i];
     else if (arg === "--output" || arg === "-o") params.output = args[++i];
     else if (arg === "--skip-render") params.skipRender = true;
@@ -78,17 +80,17 @@ async function main() {
     activeLang = "Arabic";
   }
 
-  // Create Project Folder with safe UTF-8 slug
-  const cleanSlug = params.topic
+  // Create Project Folder with safe ASCII slug for Chromium file:// compatibility
+  const asciiTopic = params.topic
     .toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\u0600-\u06FF]+/g, "-")
+    .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 30);
-  const slug = cleanSlug.length > 0 ? cleanSlug : "reel";
+    .slice(0, 24);
+  const slug = asciiTopic.length > 0 ? asciiTopic : "kinetic-reel";
   
-  const timestamp = Date.now().toString().slice(-4);
-  const projectDir = resolve(__dirname, `scratch/reel-${slug}-${timestamp}`);
+  const timestamp = Date.now().toString().slice(-6);
+  const projectDir = resolve(__dirname, `scratch/${slug}-${timestamp}`);
   mkdirSync(projectDir, { recursive: true });
 
   console.log(`📂 Dossier du projet: ${projectDir}`);
@@ -140,17 +142,20 @@ async function main() {
 
   // STAGE 4: Hero Assets Generation & Background Removal
   console.log(`\n[4/6] 🎨 Préparation des visuels héros pour chaque scène...`);
-  for (const scene of storyboard.scenes) {
+  for (let idx = 0; idx < storyboard.scenes.length; idx++) {
+    const scene = storyboard.scenes[idx];
     const heroName = scene.hero_name || `hero_${scene.id}`;
     const rawHeroPath = join(projectAssetsDir, `img/${heroName}_raw.png`);
     const finalHeroPath = join(projectAssetsDir, `img/${heroName}.png`);
 
-    console.log(`      • Scène ${scene.id}: ${scene.hero_title || heroName}...`);
+    console.log(`      • Scène ${scene.id}: ${scene.hero_title || heroName} (${scene.hero_search || 'auto'})...`);
     try {
       await generateHeroImage({
         prompt: scene.hero_prompt,
         keyword: scene.keyword,
         heroTitle: scene.hero_title,
+        heroSearch: scene.hero_search,
+        sceneIndex: idx,
         outputPngPath: rawHeroPath,
       });
       await makeTransparentCutout({
@@ -163,7 +168,7 @@ async function main() {
   }
 
   // STAGE 5: Build HyperFrames Composition
-  console.log(`\n[5/6] 📐 Assemblage de la composition HTML5 / GSAP / Kinetic Editorial (9:16)...`);
+  console.log(`\n[5/6] 📐 Assemblage de la composition HTML5 / GSAP / Style: ${params.style} (9:16)...`);
   const indexPath = join(projectDir, "index.html");
   buildCompositionHtml({
     projectDir,
@@ -172,6 +177,7 @@ async function main() {
     words: alignmentResult.words,
     totalDuration: alignmentResult.totalDuration,
     voiceAudioRel: "assets/audio/voice.wav",
+    styleName: params.style,
     outputPath: indexPath,
   });
 

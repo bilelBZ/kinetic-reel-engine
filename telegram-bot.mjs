@@ -128,7 +128,14 @@ function parseUserPrompt(text) {
     }
   }
 
-  return { topic, duration, voice, lang };
+  // Detect visual style preset
+  let style = "fares-editorial";
+  if (/swiss/i.test(text)) style = "swiss-editorial";
+  else if (/cyber|matrix|tech/i.test(text)) style = "cyber-matrix";
+  else if (/luxury|gold/i.test(text)) style = "minimal-luxury";
+  else if (/fares|nv3us|editorial/i.test(text)) style = "fares-editorial";
+
+  return { topic, duration, voice, lang, style };
 }
 
 async function handleMessage(msg) {
@@ -183,16 +190,16 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
     const apiKey = getGeminiApiKey();
     if (!apiKey) throw new Error("Clé GEMINI_API_KEY non configurée.");
 
-    const cleanSlug = topic
+    const asciiTopic = topic
       .toLowerCase()
       .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9\u0600-\u06FF]+/g, "-")
+      .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 25);
-    const slug = cleanSlug.length > 0 ? cleanSlug : "reel";
+      .slice(0, 20);
+    const slug = asciiTopic.length > 0 ? asciiTopic : "reel";
     
-    const timestamp = Date.now().toString().slice(-4);
-    const projectDir = resolve(__dirname, `scratch/bot-reel-${slug}-${timestamp}`);
+    const timestamp = Date.now().toString().slice(-6);
+    const projectDir = resolve(__dirname, `scratch/bot-${slug}-${timestamp}`);
     const projectAssetsDir = join(projectDir, "assets");
 
     // Copy template assets
@@ -229,7 +236,8 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
 
     // Step 3: Hero Images Generation
     await updateStatus("🎨 *Étape 3/5* : Génération et recherche des visuels 3D pour chaque scène...");
-    for (const sc of storyboard.scenes) {
+    for (let idx = 0; idx < storyboard.scenes.length; idx++) {
+      const sc = storyboard.scenes[idx];
       const heroName = sc.hero_name || `hero_${sc.id}`;
       const finalHeroPath = join(projectAssetsDir, `img/${heroName}.png`);
       try {
@@ -237,6 +245,8 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
           prompt: sc.hero_prompt,
           keyword: sc.keyword,
           heroTitle: sc.hero_title,
+          heroSearch: sc.hero_search,
+          sceneIndex: idx,
           outputPngPath: finalHeroPath,
         });
       } catch (e) {
@@ -261,6 +271,7 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
       words: alignmentResult.words,
       totalDuration: alignmentResult.totalDuration,
       voiceAudioRel: "assets/audio/voice.wav",
+      styleName: style,
       outputPath: indexPath,
     });
 
