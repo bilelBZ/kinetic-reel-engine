@@ -9,5 +9,8 @@
   },
   "scripts": {
     "start": "node create-reel.mjs"
+  },
+  "dependencies": {
+    "hyperframes": "^0.8.111"
   }
 }
