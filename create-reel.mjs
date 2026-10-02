@@ -72,12 +72,20 @@ async function main() {
     process.exit(0);
   }
 
-  // Create Project Folder
-  const slug = params.topic
+  // Auto-detect language if Arabic characters present and language was left to default
+  let activeLang = params.lang;
+  if (/[\u0600-\u06FF]/.test(params.topic) && activeLang === "French") {
+    activeLang = "Arabic";
+  }
+
+  // Create Project Folder with safe UTF-8 slug
+  const cleanSlug = params.topic
     .toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, 30) || "reel";
+    .replace(/[^a-z0-9\u0600-\u06FF]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 30);
+  const slug = cleanSlug.length > 0 ? cleanSlug : "reel";
   
   const timestamp = Date.now().toString().slice(-4);
   const projectDir = resolve(__dirname, `scratch/reel-${slug}-${timestamp}`);
@@ -96,11 +104,11 @@ async function main() {
 
   // STAGE 1: Generate Kinetic Storyboard
   console.log(`\n[1/6] 📝 Génération du storyboard et du script kinetic avec Gemini 2.0 Flash...`);
-  console.log(`      Sujet: "${params.topic}" | Langue: ${params.lang} | Durée: ~${params.duration}s`);
+  console.log(`      Sujet: "${params.topic}" | Langue: ${activeLang} | Durée: ~${params.duration}s`);
   const storyboard = await generateStoryboard({
     topic: params.topic,
     targetDurationSeconds: params.duration,
-    language: params.lang,
+    language: activeLang,
     apiKey,
   });
 
@@ -113,7 +121,7 @@ async function main() {
   await synthesizeVoiceWithGemini({
     scriptText: storyboard.fullScript,
     voiceName: params.voice,
-    language: params.lang,
+    language: activeLang,
     apiKey,
     outputWavPath: voiceWavPath,
   });

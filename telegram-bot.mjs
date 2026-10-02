@@ -122,6 +122,10 @@ function parseUserPrompt(text) {
       .replace(/ (?:avec|voix) (?:la voix )?(?:Puck|Aoede|Fenrir|Charon|Kore)/i, "")
       .replace(/ (?:de|en) \d+\s*(?:s|sec|secondes)/i, "")
       .trim();
+
+    if (/[\u0600-\u06FF]/.test(topic) && lang === "French") {
+      lang = "Arabic";
+    }
   }
 
   return { topic, duration, voice, lang };
@@ -179,11 +183,13 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
     const apiKey = getGeminiApiKey();
     if (!apiKey) throw new Error("Clé GEMINI_API_KEY non configurée.");
 
-    const slug = topic
+    const cleanSlug = topic
       .toLowerCase()
       .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .slice(0, 25) || "reel";
+      .replace(/[^a-z0-9\u0600-\u06FF]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 25);
+    const slug = cleanSlug.length > 0 ? cleanSlug : "reel";
     
     const timestamp = Date.now().toString().slice(-4);
     const projectDir = resolve(__dirname, `scratch/bot-reel-${slug}-${timestamp}`);
