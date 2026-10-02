@@ -31,20 +31,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Install system dependencies (FFmpeg & Chromium)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg chromium-browser fonts-inter fonts-liberation
+          cache: 'npm'
 
       - name: Install NPM dependencies
-        run: npm install
+        run: npm install --prefer-offline --no-audit
 
       - name: Generate Reel
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
-          PUPPETEER_EXECUTABLE_PATH: "/usr/bin/chromium-browser"
+          PUPPETEER_EXECUTABLE_PATH: "/usr/bin/google-chrome"
         run: |
           node create-reel.mjs \
             --topic "${{ github.event.inputs.topic }}" \
