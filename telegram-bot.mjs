@@ -114,18 +114,35 @@ function parseUserPrompt(text) {
     const durMatch = text.match(/(\d{2})\s*(?:s|sec|secondes)/i);
     if (durMatch) duration = parseInt(durMatch[1], 10);
 
+    // Language detection
+    if (/en anglais|in english/i.test(text)) lang = "English";
+    else if (/en arabe|in arabic|بالعربية/i.test(text)) lang = "Arabic";
+    else if (/en espagnol|in spanish/i.test(text)) lang = "Spanish";
+    else if (/en fran[cç]ais|in french/i.test(text)) lang = "French";
+    else if (/[\u0600-\u06FF]/.test(text)) lang = "Arabic";
+
+    // Detect visual style preset
+    let style = "fares-editorial";
+    if (/swiss/i.test(text)) style = "swiss-editorial";
+    else if (/cyber|matrix|tech/i.test(text)) style = "cyber-matrix";
+    else if (/luxury|gold/i.test(text)) style = "minimal-luxury";
+    else if (/fares|nv3us|editorial/i.test(text)) style = "fares-editorial";
+
     // Clean conversational preamble from the topic
     topic = topic
-      .replace(/^[Ff]ais[- ]moi (?:un|une) (?:reel|vid[eé]o) (?:de \d+s )?sur /i, "")
-      .replace(/^[Cc]r[eé]e (?:un|une) (?:reel|vid[eé]o) (?:de \d+s )?sur /i, "")
-      .replace(/^[Gg][eé]n[eè]re (?:un|une) (?:reel|vid[eé]o) (?:de \d+s )?sur /i, "")
-      .replace(/ (?:avec|voix) (?:la voix )?(?:Puck|Aoede|Fenrir|Charon|Kore)/i, "")
-      .replace(/ (?:de|en) \d+\s*(?:s|sec|secondes)/i, "")
+      .replace(/^[Ff]ais[- ]moi (?:un|une) (?:reel|vid[eé]o) /i, "")
+      .replace(/^[Ff]ait[- ]moi (?:un|une) (?:reel|vid[eé]o) /i, "")
+      .replace(/^[Cc]r[eé]e (?:un|une) (?:reel|vid[eé]o) /i, "")
+      .replace(/^[Gg][eé]n[eè]re (?:un|une) (?:reel|vid[eé]o) /i, "")
+      .replace(/ (?:de|en) \d+\s*(?:s|sec|secondes)/ig, "")
+      .replace(/en (?:anglais|arabe|fran[cç]ais|espagnol)/ig, "")
+      .replace(/ (?:avec|voix) (?:la voix )?(?:Puck|Aoede|Fenrir|Charon|Kore)/ig, "")
+      .replace(/ (?:avec|en)? (?:le )?style (?:fares|cyber|matrix|swiss|luxury|gold|tech)/ig, "")
+      .replace(/^sur\s+/i, "")
+      .replace(/^,|,$/g, "")
       .trim();
 
-    if (/[\u0600-\u06FF]/.test(topic) && lang === "French") {
-      lang = "Arabic";
-    }
+    return { topic, duration, voice, lang, style };
   }
 
   // Detect visual style preset
