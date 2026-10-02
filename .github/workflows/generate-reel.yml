@@ -16,8 +16,9 @@ on:
         required: true
         default: 'Puck'
       chat_id:
-        description: 'Telegram Chat ID (pour recevoir la vidéo sur votre téléphone)'
-        required: false
+        description: 'Telegram Chat ID'
+        required: true
+        default: '926214864'
 
 jobs:
   render:
