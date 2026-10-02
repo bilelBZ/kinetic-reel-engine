@@ -80,7 +80,7 @@ async function main() {
     .slice(0, 30) || "reel";
   
   const timestamp = Date.now().toString().slice(-4);
-  const projectDir = resolve(__dirname, `../../scratch/reel-${slug}-${timestamp}`);
+  const projectDir = resolve(__dirname, `scratch/reel-${slug}-${timestamp}`);
   mkdirSync(projectDir, { recursive: true });
 
   console.log(`📂 Dossier du projet: ${projectDir}`);
@@ -139,17 +139,16 @@ async function main() {
 
     console.log(`      • Scène ${scene.id}: ${scene.hero_title || heroName}...`);
     try {
-      if (scene.hero_prompt) {
-        await generateHeroImage({
-          prompt: scene.hero_prompt,
-          apiKey,
-          outputPngPath: rawHeroPath,
-        });
-        await makeTransparentCutout({
-          inputImagePath: rawHeroPath,
-          outputPngPath: finalHeroPath,
-        });
-      }
+      await generateHeroImage({
+        prompt: scene.hero_prompt,
+        keyword: scene.keyword,
+        heroTitle: scene.hero_title,
+        outputPngPath: rawHeroPath,
+      });
+      await makeTransparentCutout({
+        inputImagePath: rawHeroPath,
+        outputPngPath: finalHeroPath,
+      });
     } catch (e) {
       console.log(`        ℹ️ Image IA ignorée ou fallback activé (${e.message.slice(0, 70)})`);
     }

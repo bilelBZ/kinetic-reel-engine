@@ -7,7 +7,8 @@ import { spawnSync } from "node:child_process";
 import {
   getGeminiApiKey,
   generateStoryboard,
-  synthesizeVoiceWithGemini
+  synthesizeVoiceWithGemini,
+  generateHeroImage
 } from "./lib/gemini-ai.mjs";
 import { alignWordsWithAudio } from "./lib/word-aligner.mjs";
 import { buildCompositionHtml } from "./lib/composition-builder.mjs";
@@ -185,7 +186,7 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
       .slice(0, 25) || "reel";
     
     const timestamp = Date.now().toString().slice(-4);
-    const projectDir = resolve(__dirname, `../../scratch/bot-reel-${slug}-${timestamp}`);
+    const projectDir = resolve(__dirname, `scratch/bot-reel-${slug}-${timestamp}`);
     const projectAssetsDir = join(projectDir, "assets");
 
     // Copy template assets
@@ -199,7 +200,7 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
     mkdirSync(join(projectAssetsDir, "img"), { recursive: true });
 
     // Step 1: Storyboard
-    await updateStatus("📝 *Étape 1/4* : Écriture du scénario et des scènes cinétiques...");
+    await updateStatus("📝 *Étape 1/5* : Écriture du scénario et des scènes cinétiques...");
     const storyboard = await generateStoryboard({
       topic,
       targetDurationSeconds: duration,
@@ -210,7 +211,7 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
     console.log(`[Bot] Storyboard created for "${storyboard.title}": ${storyboard.scenes?.length} scenes`);
 
     // Step 2: Voiceover
-    await updateStatus(`🎙️ *Étape 2/4* : Synthèse vocale naturelle (Google AI Studio - ${voice})...`);
+    await updateStatus(`🎙️ *Étape 2/5* : Synthèse vocale naturelle (Google AI Studio - ${voice})...`);
     const voiceWavPath = join(projectAssetsDir, "audio/voice.wav");
     await synthesizeVoiceWithGemini({
       scriptText: storyboard.fullScript,
@@ -220,8 +221,25 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
       outputWavPath: voiceWavPath,
     });
 
-    // Step 3: Alignment & HTML Composition
-    await updateStatus("⏱️ *Étape 3/4* : Synchronisation mot par mot et composition 9:16...");
+    // Step 3: Hero Images Generation
+    await updateStatus("🎨 *Étape 3/5* : Génération et recherche des visuels 3D pour chaque scène...");
+    for (const sc of storyboard.scenes) {
+      const heroName = sc.hero_name || `hero_${sc.id}`;
+      const finalHeroPath = join(projectAssetsDir, `img/${heroName}.png`);
+      try {
+        await generateHeroImage({
+          prompt: sc.hero_prompt,
+          keyword: sc.keyword,
+          heroTitle: sc.hero_title,
+          outputPngPath: finalHeroPath,
+        });
+      } catch (e) {
+        console.warn(`[Bot Image] Failed for scene ${sc.id}: ${e.message}`);
+      }
+    }
+
+    // Step 4: Alignment & HTML Composition
+    await updateStatus("⏱️ *Étape 4/5* : Synchronisation mot par mot et composition 9:16...");
     const alignmentResult = alignWordsWithAudio({
       wavPath: voiceWavPath,
       scenes: storyboard.scenes,
@@ -253,8 +271,8 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
       duration: alignmentResult.totalDuration,
     }, null, 2), "utf8");
 
-    // Step 4: Headless Render to MP4
-    await updateStatus("🎥 *Étape 4/4* : Rendu vidéo MP4 en haute définition (1080x1920)... Cela prend environ 1 minute.");
+    // Step 5: Headless Render to MP4
+    await updateStatus("🎥 *Étape 5/5* : Rendu vidéo MP4 en haute définition (1080x1920)... Cela prend environ 1 minute.");
     const rawMp4Path = join(projectDir, `${slug}-raw.mp4`);
     renderVideoToMp4({
       projectDir,
