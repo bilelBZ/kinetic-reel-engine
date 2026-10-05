@@ -28,6 +28,7 @@ function parseArgs() {
     output: null,
     skipRender: false,
     style: "fares-editorial",
+    speed: "standard",
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -37,6 +38,7 @@ function parseArgs() {
     else if (arg === "--voice" || arg === "-v") params.voice = args[++i];
     else if (arg === "--lang" || arg === "-l") params.lang = args[++i];
     else if (arg === "--style" || arg === "-s") params.style = args[++i];
+    else if (arg === "--speed" || arg === "--pace") params.speed = args[++i];
     else if (arg === "--key" || arg === "-k") params.apiKey = args[++i];
     else if (arg === "--output" || arg === "-o") params.output = args[++i];
     else if (arg === "--skip-render") params.skipRender = true;
@@ -111,6 +113,7 @@ async function main() {
     topic: params.topic,
     targetDurationSeconds: params.duration,
     language: activeLang,
+    speed: params.speed,
     apiKey,
   });
 
@@ -178,6 +181,7 @@ async function main() {
     totalDuration: alignmentResult.totalDuration,
     voiceAudioRel: "assets/audio/voice.wav",
     styleName: params.style,
+    speed: params.speed,
     outputPath: indexPath,
   });
 

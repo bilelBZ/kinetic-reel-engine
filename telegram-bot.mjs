@@ -11,6 +11,7 @@ import {
   generateHeroImage
 } from "./lib/gemini-ai.mjs";
 import { alignWordsWithAudio } from "./lib/word-aligner.mjs";
+import { makeTransparentCutout } from "./lib/cutout-engine.mjs";
 import { buildCompositionHtml } from "./lib/composition-builder.mjs";
 import { renderVideoToMp4 } from "./lib/renderer.mjs";
 
@@ -128,6 +129,11 @@ function parseUserPrompt(text) {
     else if (/luxury|gold/i.test(text)) style = "minimal-luxury";
     else if (/fares|nv3us|editorial/i.test(text)) style = "fares-editorial";
 
+    // Detect speed / pacing preset (from storyboard-template.md)
+    let speed = "standard";
+    if (/rapide|rapid|fast/i.test(text)) speed = "rapid";
+    else if (/calme|calm|slow/i.test(text)) speed = "calm";
+
     // Clean conversational preamble from the topic
     topic = topic
       .replace(/^[Ff]ais[- ]moi (?:un|une) (?:reel|vid[eé]o) /i, "")
@@ -138,11 +144,12 @@ function parseUserPrompt(text) {
       .replace(/en (?:anglais|arabe|fran[cç]ais|espagnol)/ig, "")
       .replace(/ (?:avec|voix) (?:la voix )?(?:Puck|Aoede|Fenrir|Charon|Kore)/ig, "")
       .replace(/ (?:avec|en)? (?:le )?style (?:fares|cyber|matrix|swiss|luxury|gold|tech)/ig, "")
+      .replace(/ (?:rythme|speed|cadence) (?:rapide|calme|standard)/ig, "")
       .replace(/^sur\s+/i, "")
       .replace(/^,|,$/g, "")
       .trim();
 
-    return { topic, duration, voice, lang, style };
+    return { topic, duration, voice, lang, style, speed };
   }
 
   // Detect visual style preset
@@ -152,7 +159,11 @@ function parseUserPrompt(text) {
   else if (/luxury|gold/i.test(text)) style = "minimal-luxury";
   else if (/fares|nv3us|editorial/i.test(text)) style = "fares-editorial";
 
-  return { topic, duration, voice, lang, style };
+  let speed = "standard";
+  if (/rapide|rapid|fast/i.test(text)) speed = "rapid";
+  else if (/calme|calm|slow/i.test(text)) speed = "calm";
+
+  return { topic, duration, voice, lang, style, speed };
 }
 
 async function handleMessage(msg) {
@@ -181,12 +192,12 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
   }
 
   // Parse prompt
-  const { topic, duration, voice, lang } = parseUserPrompt(text);
-  console.log(`[Bot] Parsed: topic="${topic}", duration=${duration}s, voice=${voice}`);
+  const { topic, duration, voice, lang, style, speed } = parseUserPrompt(text);
+  console.log(`[Bot] Parsed: topic="${topic}", duration=${duration}s, voice=${voice}, style=${style}, speed=${speed}`);
 
   const statusMsg = await sendMessage(
     chatId,
-    `🎬 *Demande reçue !*\n\n📌 *Sujet* : ${topic}\n⏱️ *Durée* : ~${duration}s\n🎙️ *Voix* : ${voice}\n\n⏳ _Génération du script & storyboard en cours..._`
+    `🎬 *Demande reçue !*\n\n📌 *Sujet* : ${topic}\n⏱️ *Durée* : ~${duration}s | *Cadence* : ${speed}\n🎨 *Style* : ${style}\n🎙️ *Voix* : ${voice}\n\n⏳ _Génération du script & storyboard en cours..._`
   );
 
   const statusMsgId = statusMsg?.result?.message_id;
@@ -235,6 +246,7 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
       topic,
       targetDurationSeconds: duration,
       language: lang,
+      speed,
       apiKey,
     });
 
@@ -251,11 +263,12 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
       outputWavPath: voiceWavPath,
     });
 
-    // Step 3: Hero Images Generation
-    await updateStatus("🎨 *Étape 3/5* : Génération et recherche des visuels 3D pour chaque scène...");
+    // Step 3: Hero Images Generation & AI Transparent Cutout
+    await updateStatus("🎨 *Étape 3/5* : Recherche des objets 3D et découpage IA transparent...");
     for (let idx = 0; idx < storyboard.scenes.length; idx++) {
       const sc = storyboard.scenes[idx];
       const heroName = sc.hero_name || `hero_${sc.id}`;
+      const rawHeroPath = join(projectAssetsDir, `img/${heroName}_raw.png`);
       const finalHeroPath = join(projectAssetsDir, `img/${heroName}.png`);
       try {
         await generateHeroImage({
@@ -264,6 +277,10 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
           heroTitle: sc.hero_title,
           heroSearch: sc.hero_search,
           sceneIndex: idx,
+          outputPngPath: rawHeroPath,
+        });
+        await makeTransparentCutout({
+          inputImagePath: rawHeroPath,
           outputPngPath: finalHeroPath,
         });
       } catch (e) {
@@ -289,6 +306,7 @@ _Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher av
       totalDuration: alignmentResult.totalDuration,
       voiceAudioRel: "assets/audio/voice.wav",
       styleName: style,
+      speed: speed || "standard",
       outputPath: indexPath,
     });
 
