@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { produceReel, STAGES } from "./lib/pipeline.mjs";
 import { listStyles } from "./lib/styles/index.mjs";
 import { getGeminiApiKey } from "./lib/gemini-ai.mjs";
-import { hasFfmpeg, parseArgs, flag, flagNumber, flagBool, ROOT } from "./lib/env.mjs";
+import { hasFfmpeg, parseArgs, positionalArgs, flag, flagNumber, flagBool } from "./lib/env.mjs";
 
 /**
  * Kinetic Reel Engine — one prompt in, one finished vertical video out.
@@ -72,13 +72,11 @@ async function main() {
     return;
   }
 
-  // The topic can be positional or passed via --topic.
-  const positional = process.argv.slice(2).filter((a) => !a.startsWith("-"));
+  // The topic can be positional or passed via --topic. Values belonging to
+  // other flags must never end up in it (see positionalArgs).
   const topicArg = flag(flags, "topic", "t");
-  const skipValues = new Set([String(flag(flags, "output", "o") || ""), String(flag(flags, "out-dir") || "")]);
   const topic =
-    (typeof topicArg === "string" && topicArg) ||
-    positional.filter((p) => !skipValues.has(p)).join(" ").trim();
+    (typeof topicArg === "string" && topicArg) || positionalArgs().join(" ").trim();
 
   if (!topic) {
     console.log(USAGE);

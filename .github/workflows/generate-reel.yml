@@ -63,6 +63,10 @@ jobs:
       ASPECT: ${{ inputs.aspect }}
       IMAGE_QUALITY: ${{ inputs.image_quality }}
       CHAT_ID: ${{ inputs.chat_id }}
+      # Applies to every npx call in the job (vendor, check, render).
+      HYPERFRAMES_NO_UPDATE_CHECK: '1'
+      # Keep the CLI's anonymous telemetry off in CI.
+      DO_NOT_TRACK: '1' 
 
     steps:
       - name: Checkout
@@ -91,7 +95,6 @@ jobs:
       - name: Generate reel
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          HYPERFRAMES_NO_UPDATE_CHECK: '1'
         run: |
           node create-reel.mjs "$TOPIC" \
             --duration "$DURATION" \
@@ -105,7 +108,14 @@ jobs:
             --json > result.json
 
       - name: Show result
-        run: cat result.json
+        run: |
+          cat result.json
+          {
+            echo "## Kinetic Reel"
+            echo '```json'
+            cat result.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload video artifact
         uses: actions/upload-artifact@v4
@@ -114,16 +124,22 @@ jobs:
           path: |
             final-reel.mp4
             result.json
+            scratch/**/cover.jpg
+            scratch/**/contact-sheet.jpg
           if-no-files-found: error
 
       - name: Send to Telegram
-        if: ${{ env.CHAT_ID != '' && secrets.TELEGRAM_BOT_TOKEN != '' }}
+        if: ${{ env.CHAT_ID != '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           case "$CHAT_ID" in
-            ''|*[!0-9-]*) echo "chat_id must be numeric — skipping delivery"; exit 0 ;;
+            ''|*[!0-9-]*) echo "::warning::chat_id must be numeric — skipping delivery"; exit 0 ;;
           esac
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+            echo "::warning::TELEGRAM_BOT_TOKEN secret is not set — skipping delivery"
+            exit 0
+          fi
           curl -sS --fail-with-body -X POST \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F "chat_id=${CHAT_ID}" \

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { localFallbackStoryboard, paceFor, artDirectionFor, buildImagePrompt, extractWordTimings } from "../lib/gemini-ai.mjs";
 import { estimateTimes, detectLanguage } from "../lib/pipeline.mjs";
 import { gradientPlate } from "../lib/png.mjs";
-import { slugify, parseArgs, flag, flagNumber, flagBool } from "../lib/env.mjs";
+import { slugify, parseArgs, positionalArgs, flag, flagNumber, flagBool } from "../lib/env.mjs";
 
 test("the local fallback storyboard still satisfies every pipeline invariant", () => {
   const board = localFallbackStoryboard({ topic: "why specialty coffee costs so much", targetDurationSeconds: 30 });
@@ -84,4 +84,16 @@ test("cli helpers: slug, arg parsing, flag aliases", () => {
   assert.equal(flagNumber(flags, 30, "duration", "d"), 45);
   assert.equal(flagBool(flags, "mock"), true);
   assert.equal(flagBool(flags, "missing"), false);
+});
+
+test("flag values never leak into a positional topic (the CI call shape)", () => {
+  // `node create-reel.mjs "<topic>" --duration 45 --voice Charon --style cyber`
+  const argv = ["why espresso costs so much", "--duration", "45", "--voice", "Charon", "--style", "cyber", "--pace", "rapid", "--aspect", "4:5", "--mock"];
+  assert.deepEqual(positionalArgs(argv), ["why espresso costs so much"]);
+  // Multi-word positional topics survive, and boolean flags contribute nothing.
+  assert.deepEqual(positionalArgs(["a", "b", "c", "--json", "--mock"]), ["a", "b", "c"]);
+  // A negative number is a value, not a flag.
+  assert.deepEqual(positionalArgs(["topic", "--music-volume", "-0.5"]), ["topic"]);
+  // Flags with no value are still flags.
+  assert.deepEqual(positionalArgs(["--skip-render", "topic"]), ["topic"]);
 });
