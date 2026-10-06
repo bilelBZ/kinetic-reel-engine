@@ -1,231 +1,208 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { produceReel, STAGES } from "./lib/pipeline.mjs";
+import { listStyles } from "./lib/styles/index.mjs";
+import { getGeminiApiKey } from "./lib/gemini-ai.mjs";
+import { hasFfmpeg, parseArgs, flag, flagNumber, flagBool, ROOT } from "./lib/env.mjs";
 
-import { existsSync, mkdirSync, cpSync, writeFileSync } from "node:fs";
-import { resolve, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  getGeminiApiKey,
-  generateStoryboard,
-  synthesizeVoiceWithGemini,
-  generateHeroImage
-} from "./lib/gemini-ai.mjs";
-import { alignWordsWithAudio } from "./lib/word-aligner.mjs";
-import { makeTransparentCutout } from "./lib/cutout-engine.mjs";
-import { buildCompositionHtml } from "./lib/composition-builder.mjs";
-import { renderVideoToMp4 } from "./lib/renderer.mjs";
+/**
+ * Kinetic Reel Engine — one prompt in, one finished vertical video out.
+ *
+ *   node create-reel.mjs "why specialty coffee costs so much" --duration 30
+ *   node create-reel.mjs "..." --style cyber --lang English --pace rapid --aspect 4:5
+ */
 
-const __dirname = resolve(fileURLToPath(import.meta.url), "..");
+const VOICES = ["Fenrir", "Puck", "Charon", "Kore", "Aoede"];
 
-// Parse arguments
-function parseArgs() {
-  const args = process.argv.slice(2);
-  const params = {
-    topic: null,
-    duration: 30,
-    voice: "Puck", // Puck, Aoede, Fenrir, Charon, Kore
-    lang: "French",
-    apiKey: null,
-    output: null,
-    skipRender: false,
-    style: "fares-editorial",
-    speed: "standard",
-  };
+const USAGE = `
+Kinetic Reel Engine — one prompt → one finished video.
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--topic" || arg === "-t") params.topic = args[++i];
-    else if (arg === "--duration" || arg === "-d") params.duration = Number(args[++i]);
-    else if (arg === "--voice" || arg === "-v") params.voice = args[++i];
-    else if (arg === "--lang" || arg === "-l") params.lang = args[++i];
-    else if (arg === "--style" || arg === "-s") params.style = args[++i];
-    else if (arg === "--speed" || arg === "--pace") params.speed = args[++i];
-    else if (arg === "--key" || arg === "-k") params.apiKey = args[++i];
-    else if (arg === "--output" || arg === "-o") params.output = args[++i];
-    else if (arg === "--skip-render") params.skipRender = true;
-  }
-  return params;
-}
+USAGE
+  node create-reel.mjs "<topic or idea>" [options]
+
+CORE OPTIONS
+  -d, --duration <sec>     Target length in seconds            (default 30)
+  -v, --voice <name>       ${VOICES.join(", ")}
+  -s, --style <name>       ${listStyles().map((s) => s.id).join(" | ")}
+  -l, --lang <language>    French, English, Arabic, Spanish…   (auto-detected)
+      --pace <preset>      calm | standard | rapid             (default standard)
+      --aspect <ratio>     9:16 | 4:5 | 1:1 | 16:9             (default 9:16)
+
+QUALITY OPTIONS
+      --image-quality <t>  high (fast) | max (best models first)   (default high)
+      --render-quality <t> fast | high | best                  (default high)
+      --fps <n>            Force a frame rate (e.g. 60)
+      --no-taps            Disable the per-word acoustic taps
+      --music <file>       Music bed (mp3/wav) mixed under the voice
+      --music-volume <n>   Music level, 0–1                    (default 0.16)
+      --brand <text>       Small persistent watermark/brand line
+      --no-cover           Skip the JPG cover frame
+      --contact-sheet      Also write a frame grid for review
+
+PIPELINE OPTIONS
+  -o, --output <file>      MP4 destination                  (default: project dir)
+      --out-dir <dir>      Parent directory for the project (default ./scratch)
+      --skip-render        Build the project + HTML, stop before rendering
+      --mock               Offline dry run: no API calls, placeholder assets
+      --keep-frames        Keep render frame dumps for debugging
+      --json               Machine-readable result on stdout
+  -h, --help               Show this help
+      --styles             List the style presets
+
+EXAMPLES
+  node create-reel.mjs "Pourquoi le café de spécialité coûte si cher" -d 30 --pace standard
+  node create-reel.mjs "3 mistakes that kill a startup" -s cyber --lang English --pace rapid
+  node create-reel.mjs "أهم عادات الناجحين" -l Arabic -s luxury -d 45
+  node create-reel.mjs "my topic" --mock --skip-render     # free offline test
+`;
 
 async function main() {
-  console.log("\n=======================================================");
-  console.log(" 🎬 KINETIC EDITORIAL REEL AUTOMATION ENGINE");
-  console.log(" Powered by Google AI Studio (Gemini 2.0 Audio) + HyperFrames");
-  console.log("=======================================================\n");
+  const flags = parseArgs();
 
-  const params = parseArgs();
-
-  const apiKey = getGeminiApiKey(params.apiKey);
-  if (!apiKey) {
-    console.error("❌ ERREUR: Clé Google AI Studio manquante (GEMINI_API_KEY).");
-    console.error("Veuillez définir votre clé via:");
-    console.error("  $env:GEMINI_API_KEY = 'votre_cle_ici'");
-    console.error("  ou créez un fichier .env avec GEMINI_API_KEY=votre_cle\n");
-    process.exit(1);
+  if (flagBool(flags, "help", "h")) {
+    console.log(USAGE);
+    return;
   }
-
-  if (!params.topic) {
-    console.log("Usage: node create-reel.mjs --topic \"<Sujet ou Script>\" [options]");
-    console.log("\nOptions:");
-    console.log("  --topic, -t       Sujet de la vidéo ou script (Requis)");
-    console.log("  --duration, -d    Durée approximative en secondes (défaut: 30)");
-    console.log("  --voice, -v       Voix Google AI Studio: Puck, Aoede, Fenrir, Charon, Kore (défaut: Puck)");
-    console.log("  --lang, -l        Langue: French, English, Spanish, Arabic, etc. (défaut: French)");
-    console.log("  --key, -k         Clé GEMINI_API_KEY explicite");
-    console.log("  --output, -o      Chemin du fichier MP4 de sortie");
-    console.log("  --skip-render     Générer les assets et le projet HTML sans lancer le rendu MP4\n");
-    process.exit(0);
-  }
-
-  // Auto-detect language if Arabic characters present and language was left to default
-  let activeLang = params.lang;
-  if (/[\u0600-\u06FF]/.test(params.topic) && activeLang === "French") {
-    activeLang = "Arabic";
-  }
-
-  // Create Project Folder with safe ASCII slug for Chromium file:// compatibility
-  const asciiTopic = params.topic
-    .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24);
-  const slug = asciiTopic.length > 0 ? asciiTopic : "kinetic-reel";
-  
-  const timestamp = Date.now().toString().slice(-6);
-  const projectDir = resolve(__dirname, `scratch/${slug}-${timestamp}`);
-  mkdirSync(projectDir, { recursive: true });
-
-  console.log(`📂 Dossier du projet: ${projectDir}`);
-
-  // Copy template assets (fonts, SFX)
-  const templateAssetsDir = join(__dirname, "templates/assets");
-  const projectAssetsDir = join(projectDir, "assets");
-  if (existsSync(templateAssetsDir)) {
-    cpSync(templateAssetsDir, projectAssetsDir, { recursive: true });
-  }
-  mkdirSync(join(projectAssetsDir, "audio"), { recursive: true });
-  mkdirSync(join(projectAssetsDir, "img"), { recursive: true });
-
-  // STAGE 1: Generate Kinetic Storyboard
-  console.log(`\n[1/6] 📝 Génération du storyboard et du script kinetic avec Gemini 2.0 Flash...`);
-  console.log(`      Sujet: "${params.topic}" | Langue: ${activeLang} | Durée: ~${params.duration}s`);
-  const storyboard = await generateStoryboard({
-    topic: params.topic,
-    targetDurationSeconds: params.duration,
-    language: activeLang,
-    speed: params.speed,
-    apiKey,
-  });
-
-  writeFileSync(join(projectDir, "storyboard.json"), JSON.stringify(storyboard, null, 2), "utf8");
-  console.log(`      ✓ Storyboard généré (${storyboard.scenes?.length || 0} scènes, Titre: "${storyboard.title}")`);
-
-  // STAGE 2: Synthesize Voiceover via Google AI Studio Gemini 2.0 Audio
-  console.log(`\n[2/6] 🎙️ Synthèse du voiceover ultra-naturel (Google AI Studio - Voix: ${params.voice})...`);
-  const voiceWavPath = join(projectAssetsDir, "audio/voice.wav");
-  await synthesizeVoiceWithGemini({
-    scriptText: storyboard.fullScript,
-    voiceName: params.voice,
-    language: activeLang,
-    apiKey,
-    outputWavPath: voiceWavPath,
-  });
-  console.log(`      ✓ Audio généré et converti en WAV 44.1kHz: assets/audio/voice.wav`);
-
-  // STAGE 3: Word Alignment & Acoustic Sync
-  console.log(`\n[3/6] ⏱️ Alignement acoustique mot par mot pour les reveals cinétiques...`);
-  const wordsJsonPath = join(projectDir, "words.json");
-  const alignmentResult = alignWordsWithAudio({
-    wavPath: voiceWavPath,
-    scenes: storyboard.scenes,
-    fullScript: storyboard.fullScript,
-    outputJsonPath: wordsJsonPath,
-  });
-  console.log(`      ✓ ${alignmentResult.words.length} mots synchronisés avec précision (Durée totale: ${alignmentResult.totalDuration}s)`);
-
-  // STAGE 4: Hero Assets Generation & Background Removal
-  console.log(`\n[4/6] 🎨 Préparation des visuels héros pour chaque scène...`);
-  for (let idx = 0; idx < storyboard.scenes.length; idx++) {
-    const scene = storyboard.scenes[idx];
-    const heroName = scene.hero_name || `hero_${scene.id}`;
-    const rawHeroPath = join(projectAssetsDir, `img/${heroName}_raw.png`);
-    const finalHeroPath = join(projectAssetsDir, `img/${heroName}.png`);
-
-    console.log(`      • Scène ${scene.id}: ${scene.hero_title || heroName} (${scene.hero_search || 'auto'})...`);
-    try {
-      await generateHeroImage({
-        prompt: scene.hero_prompt,
-        keyword: scene.keyword,
-        heroTitle: scene.hero_title,
-        heroSearch: scene.hero_search,
-        sceneIndex: idx,
-        outputPngPath: rawHeroPath,
-      });
-      await makeTransparentCutout({
-        inputImagePath: rawHeroPath,
-        outputPngPath: finalHeroPath,
-      });
-    } catch (e) {
-      console.log(`        ℹ️ Image IA ignorée ou fallback activé (${e.message.slice(0, 70)})`);
+  if (flagBool(flags, "styles")) {
+    console.log("\nStyle presets:\n");
+    for (const style of listStyles()) {
+      console.log(`  ${style.id.padEnd(18)} ${style.name}\n  ${" ".repeat(18)} ${style.description}\n`);
     }
-  }
-
-  // STAGE 5: Build HyperFrames Composition
-  console.log(`\n[5/6] 📐 Assemblage de la composition HTML5 / GSAP / Style: ${params.style} (9:16)...`);
-  const indexPath = join(projectDir, "index.html");
-  buildCompositionHtml({
-    projectDir,
-    title: storyboard.title || params.topic,
-    scenes: storyboard.scenes,
-    words: alignmentResult.words,
-    totalDuration: alignmentResult.totalDuration,
-    voiceAudioRel: "assets/audio/voice.wav",
-    styleName: params.style,
-    speed: params.speed,
-    outputPath: indexPath,
-  });
-
-  // Write meta.json and hyperframes.json configuration
-  writeFileSync(join(projectDir, "meta.json"), JSON.stringify({
-    id: slug,
-    name: slug,
-    createdAt: new Date().toISOString()
-  }, null, 2), "utf8");
-
-  writeFileSync(join(projectDir, "hyperframes.json"), JSON.stringify({
-    width: 1080,
-    height: 1920,
-    fps: 30,
-    duration: alignmentResult.totalDuration,
-  }, null, 2), "utf8");
-
-  console.log(`      ✓ Composition prête: ${indexPath}`);
-
-  // STAGE 6: Render to MP4
-  if (params.skipRender) {
-    console.log("\n[6/6] ⏭️ Étape de rendu ignorée (--skip-render demandé).");
-    console.log(`Pour prévisualiser en direct: cd "${projectDir}" && npx hyperframes preview`);
     return;
   }
 
-  const outputMp4Path = params.output
-    ? resolve(params.output)
-    : join(projectDir, `${slug}.mp4`);
+  // The topic can be positional or passed via --topic.
+  const positional = process.argv.slice(2).filter((a) => !a.startsWith("-"));
+  const topicArg = flag(flags, "topic", "t");
+  const skipValues = new Set([String(flag(flags, "output", "o") || ""), String(flag(flags, "out-dir") || "")]);
+  const topic =
+    (typeof topicArg === "string" && topicArg) ||
+    positional.filter((p) => !skipValues.has(p)).join(" ").trim();
 
-  console.log(`\n[6/6] 🎥 Rendu headless ultra-haute qualité vers MP4 (1080x1920)...`);
-  renderVideoToMp4({
-    projectDir,
-    outputMp4Path,
+  if (!topic) {
+    console.log(USAGE);
+    process.exitCode = 1;
+    return;
+  }
+
+  const mock = flagBool(flags, "mock");
+  const skipRender = flagBool(flags, "skip-render");
+  const jsonOut = flagBool(flags, "json");
+
+  // FFmpeg is only strictly required for rendering and audio normalisation —
+  // `--skip-render` runs (project inspection, CI lint) are allowed without it.
+  if (!hasFfmpeg() && !skipRender) {
+    console.error("❌ FFmpeg is required to render (audio normalisation, muxing, cover frames).");
+    console.error("   Install FFmpeg, set FFMPEG_PATH, or use --skip-render to build the project only.");
+    process.exit(1);
+  }
+  if (!hasFfmpeg() && skipRender) {
+    console.warn("⚠️  FFmpeg not found — building the project only (durations will be estimated).");
+  }
+  if (!mock && !getGeminiApiKey()) {
+    console.error("❌ GEMINI_API_KEY is required (script, voice, images, timing).");
+    console.error("   Set it in the environment, in .env, or pass --key.");
+    console.error("   Tip: `--mock` builds a full project offline with placeholder assets.");
+    process.exit(1);
+  }
+
+  const apiKey = flag(flags, "key", "k");
+  const options = {
+    topic,
+    duration: flagNumber(flags, 30, "duration", "d"),
+    voice: String(flag(flags, "voice", "v") || "Fenrir"),
+    style: String(flag(flags, "style", "s") || "fares-editorial"),
+    speed: String(flag(flags, "pace", "speed") || "standard"),
+    lang: flag(flags, "lang", "l") || null,
+    aspect: String(flag(flags, "aspect") || "9:16"),
+    output: flag(flags, "output", "o") ? resolve(String(flag(flags, "output", "o"))) : null,
+    outDir: flag(flags, "out-dir") ? resolve(String(flag(flags, "out-dir"))) : null,
+    quality: String(flag(flags, "render-quality") || "high"),
+    imageQuality: String(flag(flags, "image-quality") || "high"),
+    fps: flagNumber(flags, null, "fps"),
+    taps: !flagBool(flags, "no-taps"),
+    music: flag(flags, "music") ? resolve(String(flag(flags, "music"))) : null,
+    musicVolume: flagNumber(flags, 0.16, "music-volume"),
+    brand: flag(flags, "brand") || null,
+    mock,
+    skipRender,
+    keepFrames: flagBool(flags, "keep-frames"),
+    cover: !flagBool(flags, "no-cover"),
+    contactSheet: flagBool(flags, "contact-sheet"),
+    log: jsonOut ? () => {} : console.log,
+  };
+
+  if (apiKey) process.env.GEMINI_API_KEY = String(apiKey);
+
+  if (!jsonOut) {
+    const canvas = options.aspect;
+    console.log("\n=======================================================");
+    console.log(" 🎬 KINETIC REEL ENGINE");
+    console.log("=======================================================");
+    console.log(` Topic    ${topic}`);
+    console.log(` Length   ~${options.duration}s · ${options.aspect} · ${options.speed} pace`);
+    console.log(` Look     ${options.style} · voice ${options.voice}${options.lang ? ` · ${options.lang}` : ""}`);
+    console.log(` Models   images: ${options.imageQuality} · render: ${options.quality}${mock ? " · MOCK" : ""}`);
+    console.log("=======================================================\n");
+  }
+
+  const stageIndex = new Map(STAGES.map((s, i) => [s.key, i]));
+  const started = Date.now();
+
+  const result = await produceReel({
+    ...options,
+    onStage: ({ key, label, detail }) => {
+      if (jsonOut) return;
+      const step = `[${(stageIndex.get(key) ?? 0) + 1}/${STAGES.length}]`;
+      console.log(`${step} ${label}${detail ? ` — ${detail}` : ""}`);
+    },
   });
 
+  if (jsonOut) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          mp4: result.mp4Path || null,
+          cover: result.coverPath || null,
+          projectDir: result.projectDir,
+          indexHtml: result.indexPath,
+          duration: result.totalDuration,
+          timingSource: result.timingSource,
+          scenes: result.storyboard?.scenes?.length || 0,
+          words: result.words?.length || 0,
+          title: result.storyboard?.title || topic,
+          warnings: result.warnings,
+          elapsedMs: result.elapsedMs,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  for (const warning of result.warnings) console.log(`  ⚠️  ${warning}`);
+
   console.log("\n=======================================================");
-  console.log(" 🎉 VIDÉO MP4 GÉNÉRÉE AVEC SUCCÈS !");
-  console.log(` 📁 Emplacement: ${outputMp4Path}`);
+  if (result.skippedRender) {
+    console.log(" 📐 COMPOSITION READY (render skipped)");
+    console.log(` 📁 Project : ${result.projectDir}`);
+    console.log(` ▶  Preview : cd "${result.projectDir}" && npx hyperframes preview`);
+  } else {
+    console.log(" 🎉 VIDEO READY");
+    console.log(` 🎥 MP4    : ${result.mp4Path}`);
+    if (result.coverPath) console.log(` 🖼  Cover  : ${result.coverPath}`);
+    console.log(` 📁 Project: ${result.projectDir}`);
+    console.log(` ⏱  Took   : ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  }
   console.log("=======================================================\n");
 }
 
 main().catch((err) => {
-  console.error("\n❌ ERREUR FATALE:", err.message);
-  console.error(err.stack);
-  process.exit(1);
+  console.error(`\n❌ ${err.message}`);
+  if (process.env.DEBUG) console.error(err.stack);
+  else console.error("   Re-run with DEBUG=1 for the full stack trace.");
+  process.exitCode = 1;
 });

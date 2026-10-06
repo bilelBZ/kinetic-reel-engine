@@ -1,7 +1,23 @@
+# Secrets and local config
 .env
-node_modules/
+.telegram-offset.json
+
+# Generated projects (videos, images, frames)
 scratch/
-.hyperframes/
 *.mp4
 *.wav
 *.pcm
+*.jpg.tmp
+
+# HyperFrames working files
+.hyperframes/
+renders/
+snapshots/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,76 +1,132 @@
 name: Generate Kinetic Reel
 
+# Renders one prompted reel in the cloud and optionally delivers it to Telegram.
+#
+# Security notes (these are deliberate — do not "simplify" them back):
+#  - Inputs reach the shell only through `env:`. Interpolating ${{ inputs.* }}
+#    straight into a `run:` block is a command-injection hole: a topic
+#    containing a quote and $(...) would execute on the runner, where the API
+#    secrets live.
+#  - chat_id is validated as digits before it is used.
+#  - The workflow has no write permissions beyond the artifact upload.
+
 on:
   workflow_dispatch:
     inputs:
       topic:
-        description: 'Sujet de la vidéo ou brief'
+        description: 'Topic, idea or full script'
         required: true
-        default: 'Pourquoi le café de spécialité coûte si cher'
+        default: 'why specialty coffee costs so much'
       duration:
-        description: 'Durée en secondes'
+        description: 'Target length in seconds'
         required: true
         default: '30'
       voice:
-        description: 'Voix (Puck, Aoede, Fenrir, Charon, Kore)'
+        description: 'Voice (Fenrir, Puck, Charon, Kore, Aoede)'
         required: true
-        default: 'Puck'
+        default: 'Fenrir'
+      style:
+        description: 'Style (fares-editorial, swiss-editorial, cyber-matrix, minimal-luxury)'
+        required: true
+        default: 'fares-editorial'
+      pace:
+        description: 'Pace (calm, standard, rapid)'
+        required: true
+        default: 'standard'
+      aspect:
+        description: 'Aspect ratio (9:16, 4:5, 1:1, 16:9)'
+        required: true
+        default: '9:16'
+      image_quality:
+        description: 'Image quality (high, max)'
+        required: true
+        default: 'high'
       chat_id:
-        description: 'Telegram Chat ID'
-        required: true
-        default: '926214864'
+        description: 'Telegram chat id (optional, digits only)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
 
 jobs:
   render:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      TOPIC: ${{ inputs.topic }}
+      DURATION: ${{ inputs.duration }}
+      VOICE: ${{ inputs.voice }}
+      STYLE: ${{ inputs.style }}
+      PACE: ${{ inputs.pace }}
+      ASPECT: ${{ inputs.aspect }}
+      IMAGE_QUALITY: ${{ inputs.image_quality }}
+      CHAT_ID: ${{ inputs.chat_id }}
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: npm
 
-      - name: Install FFmpeg
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Install FFmpeg and fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-inter fonts-noto-core
 
-      - name: Install NPM dependencies
-        run: npm install --prefer-offline --no-audit
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
 
-      - name: Generate Reel
+      - name: Vendor render runtime (GSAP, fonts)
+        run: npm run vendor
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Generate reel
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
-          PUPPETEER_EXECUTABLE_PATH: "/usr/bin/google-chrome"
+          HYPERFRAMES_NO_UPDATE_CHECK: '1'
         run: |
-          node create-reel.mjs \
-            --topic "${{ github.event.inputs.topic }}" \
-            --duration ${{ github.event.inputs.duration }} \
-            --voice "${{ github.event.inputs.voice }}" \
-            --output "render-raw.mp4"
+          node create-reel.mjs "$TOPIC" \
+            --duration "$DURATION" \
+            --voice "$VOICE" \
+            --style "$STYLE" \
+            --pace "$PACE" \
+            --aspect "$ASPECT" \
+            --image-quality "$IMAGE_QUALITY" \
+            --contact-sheet \
+            --output "final-reel.mp4" \
+            --json > result.json
 
-      - name: Optimize video for mobile
-        run: |
-          ffmpeg -y -i render-raw.mp4 -c:v libx264 -crf 23 -preset veryfast -c:a aac -b:a 160k final-reel.mp4
+      - name: Show result
+        run: cat result.json
 
-      - name: Upload video as GitHub Artifact
+      - name: Upload video artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kinetic-reel-video
-          path: final-reel.mp4
+          name: kinetic-reel
+          path: |
+            final-reel.mp4
+            result.json
+          if-no-files-found: error
 
-      - name: Send video to Telegram
-        if: ${{ github.event.inputs.chat_id != '' }}
+      - name: Send to Telegram
+        if: ${{ env.CHAT_ID != '' && secrets.TELEGRAM_BOT_TOKEN != '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ github.event.inputs.chat_id }}
-          TOPIC: ${{ github.event.inputs.topic }}
-          VOICE: ${{ github.event.inputs.voice }}
         run: |
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
-            -F chat_id="${CHAT_ID}" \
-            -F video=@final-reel.mp4 \
-            -F supports_streaming=true \
-            -F caption="🎬 *${TOPIC}* (Voix: ${VOICE}) - Vidéo 1080x1920 générée avec succès sur GitHub Cloud !"
+          case "$CHAT_ID" in
+            ''|*[!0-9-]*) echo "chat_id must be numeric — skipping delivery"; exit 0 ;;
+          esac
+          curl -sS --fail-with-body -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F "chat_id=${CHAT_ID}" \
+            -F "video=@final-reel.mp4" \
+            -F "supports_streaming=true" \
+            -F "caption=Kinetic Reel — ${TOPIC} (${DURATION}s, ${STYLE})"

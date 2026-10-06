@@ -1,48 +1,43 @@
 #!/usr/bin/env node
+import { readFileSync, writeFileSync, existsSync, openAsBlob } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { produceReel } from "./lib/pipeline.mjs";
+import { getGeminiApiKey } from "./lib/gemini-ai.mjs";
+import { listStyles } from "./lib/styles/index.mjs";
+import { ROOT, readEnvKey } from "./lib/env.mjs";
 
-import { readFileSync, existsSync, writeFileSync, openAsBlob } from "node:fs";
-import { resolve, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
-import {
-  getGeminiApiKey,
-  generateStoryboard,
-  synthesizeVoiceWithGemini,
-  generateHeroImage
-} from "./lib/gemini-ai.mjs";
-import { alignWordsWithAudio } from "./lib/word-aligner.mjs";
-import { makeTransparentCutout } from "./lib/cutout-engine.mjs";
-import { buildCompositionHtml } from "./lib/composition-builder.mjs";
-import { renderVideoToMp4 } from "./lib/renderer.mjs";
+/**
+ * Telegram front-end: send a prompt from your phone, get the finished MP4 back.
+ *
+ * Hard-won details encoded here:
+ *  - The update offset is persisted, so a restart never re-renders (and
+ *    re-charges) videos the user already received.
+ *  - User text is escaped and sent with MarkdownV2, or plain — never raw
+ *    Markdown, which 400s the moment a topic contains "*" or "_".
+ *  - One render at a time, so a burst of messages cannot fork N Chromiums.
+ */
 
-const __dirname = resolve(fileURLToPath(import.meta.url), "..");
+const OFFSET_FILE = join(ROOT, ".telegram-offset.json");
+const MAX_TOPIC_LENGTH = 400;
 
-// Locate FFmpeg (Windows Scoop or Linux / Docker system PATH)
-function getFfmpegPath() {
-  const scoopPath = "C:\\Users\\bbouzid\\AppData\\Local\\Scoop\\shims\\ffmpeg.exe";
-  if (existsSync(scoopPath)) return scoopPath;
-  return "ffmpeg";
+/** True when this file is the entry point (not imported by a test or another module). */
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+const token = readEnvKey(["TELEGRAM_BOT_TOKEN"]);
+if (!token && isMain) {
+  console.error("❌ TELEGRAM_BOT_TOKEN is missing.");
+  console.error("   Create a bot with @BotFather, then set TELEGRAM_BOT_TOKEN in .env or the environment.");
+  process.exit(1);
 }
+const API = `https://api.telegram.org/bot${token || ""}`;
 
-// Load Telegram Token from env or .env
-function getTelegramToken() {
-  if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN.trim()) {
-    return process.env.TELEGRAM_BOT_TOKEN.trim();
-  }
-  const envPath = join(__dirname, ".env");
-  if (existsSync(envPath)) {
-    const content = readFileSync(envPath, "utf8");
-    const match = content.match(/^\s*TELEGRAM_BOT_TOKEN\s*=\s*["']?([^"'\r\n]+)["']?/m);
-    if (match && match[1]) return match[1].trim();
-  }
-  return null;
-}
+// --------------------------------------------------------------------------
+// Telegram helpers
+// --------------------------------------------------------------------------
 
-const TOKEN = getTelegramToken();
-const API_BASE = `https://api.telegram.org/bot${TOKEN}`;
-
-async function callTelegram(method, payload = {}) {
-  const res = await fetch(`${API_BASE}/${method}`, {
+async function callTelegram(method, payload) {
+  const res = await fetch(`${API}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -50,341 +45,307 @@ async function callTelegram(method, payload = {}) {
   return res.json();
 }
 
-async function sendMessage(chatId, text, options = {}) {
-  return callTelegram("sendMessage", {
+/** Escape for MarkdownV2 — every one of these characters breaks parsing. */
+function escapeMarkdown(text) {
+  return String(text ?? "").replace(/[_*[\]()~`>#+\-=|{}.!\\]/g, (c) => `\\${c}`);
+}
+
+async function sendMessage(chatId, text, { markdown = true, ...rest } = {}) {
+  const payload = { chat_id: chatId, text: markdown ? escapeMarkdown(text) : text, ...rest };
+  if (markdown) payload.parse_mode = "MarkdownV2";
+  const result = await callTelegram("sendMessage", payload);
+  if (!result.ok && markdown) {
+    // Never lose a message to formatting: retry verbatim without parse mode.
+    return callTelegram("sendMessage", { chat_id: chatId, text: String(text), ...rest });
+  }
+  return result;
+}
+
+async function editMessage(chatId, messageId, text) {
+  const result = await callTelegram("editMessageText", {
     chat_id: chatId,
-    text,
-    parse_mode: "Markdown",
-    ...options,
+    message_id: messageId,
+    text: escapeMarkdown(text),
+    parse_mode: "MarkdownV2",
   });
+  if (!result.ok) {
+    return callTelegram("editMessageText", { chat_id: chatId, message_id: messageId, text: String(text) });
+  }
+  return result;
 }
 
 async function sendVideo(chatId, videoPath, caption = "") {
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const form = new FormData();
-      form.append("chat_id", chatId);
-      form.append("caption", caption);
+      form.append("chat_id", String(chatId));
+      if (caption) form.append("caption", caption.slice(0, 1000));
       form.append("supports_streaming", "true");
+      form.append("video", await openAsBlob(videoPath), "kinetic-reel.mp4");
 
-      const blob = await openAsBlob(videoPath);
-      form.append("video", blob, "kinetic-reel.mp4");
-
-      const res = await fetch(`${API_BASE}/sendVideo`, {
-        method: "POST",
-        body: form,
-      });
+      const res = await fetch(`${API}/sendVideo`, { method: "POST", body: form });
       const data = await res.json();
       if (data.ok) return data;
-      console.warn(`[Telegram sendVideo] Attempt ${attempt + 1} failed:`, data.description);
+      lastError = data.description || `HTTP ${res.status}`;
     } catch (err) {
-      console.warn(`[Telegram sendVideo] Network error attempt ${attempt + 1}:`, err.message);
-      await new Promise((r) => setTimeout(r, 2000));
+      lastError = err.message;
     }
+    await sleep(1500 * attempt);
   }
-  throw new Error("Impossible d'envoyer la vidéo après 3 tentatives.");
+  throw new Error(`Telegram rejected the video: ${lastError}`);
 }
 
-// Parse user prompt message into topic, duration, voice, etc.
-function parseUserPrompt(text) {
-  let topic = text.trim();
-  let duration = 30;
-  let voice = "Puck"; // Default
-  let lang = "French";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Check for brief structure or keywords
-  if (text.includes("BRIEF VIDÉO KINETIC") || text.includes("Sujet / Titre")) {
-    const subjectMatch = text.match(/Sujet\s*\/\s*Titre\s*:\s*(.+)/i);
-    if (subjectMatch) topic = subjectMatch[1].replace(/\[|\]/g, "").trim();
+// --------------------------------------------------------------------------
+// Prompt parsing
+// --------------------------------------------------------------------------
 
-    const durationMatch = text.match(/Durée\s*(?:souhaitée|cible)?\s*:\s*(\d+)/i);
-    if (durationMatch) duration = parseInt(durationMatch[1], 10);
+const VOICES = ["Fenrir", "Puck", "Charon", "Kore", "Aoede"];
 
-    const voiceMatch = text.match(/Voix\s*(?:Google AI Studio)?\s*:\s*(\w+)/i);
-    if (voiceMatch) voice = voiceMatch[1].trim();
+export function parsePrompt(text) {
+  const raw = String(text || "").trim();
+  const params = { topic: raw, duration: 30, voice: "Fenrir", speed: "standard", style: null, lang: null };
 
-    const langMatch = text.match(/Langue\s*:\s*(\w+)/i);
-    if (langMatch) lang = langMatch[1].trim();
-  } else {
-    // Freeform heuristics
-    if (/aoede/i.test(text)) voice = "Aoede";
-    else if (/fenrir/i.test(text)) voice = "Fenrir";
-    else if (/charon/i.test(text)) voice = "Charon";
-    else if (/kore/i.test(text)) voice = "Kore";
+  const durationMatch = raw.match(/(\d{1,3})\s*(?:secondes?|seconds?|secs?|s\b)/i);
+  if (durationMatch) params.duration = Math.max(5, Math.min(180, Number(durationMatch[1])));
 
-    const durMatch = text.match(/(\d{2})\s*(?:s|sec|secondes)/i);
-    if (durMatch) duration = parseInt(durMatch[1], 10);
-
-    // Language detection
-    if (/en anglais|in english/i.test(text)) lang = "English";
-    else if (/en arabe|in arabic|بالعربية/i.test(text)) lang = "Arabic";
-    else if (/en espagnol|in spanish/i.test(text)) lang = "Spanish";
-    else if (/en fran[cç]ais|in french/i.test(text)) lang = "French";
-    else if (/[\u0600-\u06FF]/.test(text)) lang = "Arabic";
-
-    // Detect visual style preset
-    let style = "fares-editorial";
-    if (/swiss/i.test(text)) style = "swiss-editorial";
-    else if (/cyber|matrix|tech/i.test(text)) style = "cyber-matrix";
-    else if (/luxury|gold/i.test(text)) style = "minimal-luxury";
-    else if (/fares|nv3us|editorial/i.test(text)) style = "fares-editorial";
-
-    // Detect speed / pacing preset (from storyboard-template.md)
-    let speed = "standard";
-    if (/rapide|rapid|fast/i.test(text)) speed = "rapid";
-    else if (/calme|calm|slow/i.test(text)) speed = "calm";
-
-    // Clean conversational preamble from the topic
-    topic = topic
-      .replace(/^[Ff]ais[- ]moi (?:un|une) (?:reel|vid[eé]o) /i, "")
-      .replace(/^[Ff]ait[- ]moi (?:un|une) (?:reel|vid[eé]o) /i, "")
-      .replace(/^[Cc]r[eé]e (?:un|une) (?:reel|vid[eé]o) /i, "")
-      .replace(/^[Gg][eé]n[eè]re (?:un|une) (?:reel|vid[eé]o) /i, "")
-      .replace(/ (?:de|en) \d+\s*(?:s|sec|secondes)/ig, "")
-      .replace(/en (?:anglais|arabe|fran[cç]ais|espagnol)/ig, "")
-      .replace(/ (?:avec|voix) (?:la voix )?(?:Puck|Aoede|Fenrir|Charon|Kore)/ig, "")
-      .replace(/ (?:avec|en)? (?:le )?style (?:fares|cyber|matrix|swiss|luxury|gold|tech)/ig, "")
-      .replace(/ (?:rythme|speed|cadence) (?:rapide|calme|standard)/ig, "")
-      .replace(/^sur\s+/i, "")
-      .replace(/^,|,$/g, "")
-      .trim();
-
-    return { topic, duration, voice, lang, style, speed };
+  for (const voice of VOICES) {
+    if (new RegExp(`\\b${voice}\\b`, "i").test(raw)) params.voice = voice;
   }
 
-  // Detect visual style preset
-  let style = "fares-editorial";
-  if (/swiss/i.test(text)) style = "swiss-editorial";
-  else if (/cyber|matrix|tech/i.test(text)) style = "cyber-matrix";
-  else if (/luxury|gold/i.test(text)) style = "minimal-luxury";
-  else if (/fares|nv3us|editorial/i.test(text)) style = "fares-editorial";
+  if (/\b(rapide|rapid|fast|snappy)\b/i.test(raw)) params.speed = "rapid";
+  else if (/\b(calme|calm|slow|lent)\b/i.test(raw)) params.speed = "calm";
 
-  let speed = "standard";
-  if (/rapide|rapid|fast/i.test(text)) speed = "rapid";
-  else if (/calme|calm|slow/i.test(text)) speed = "calm";
+  if (/\b(swiss|suisse)\b/i.test(raw)) params.style = "swiss-editorial";
+  else if (/\b(cyber|matrix|tech|neon)\b/i.test(raw)) params.style = "cyber-matrix";
+  else if (/\b(luxury|gold|or\b|luxe)\b/i.test(raw)) params.style = "minimal-luxury";
+  else if (/\b(fares|editorial)\b/i.test(raw)) params.style = "fares-editorial";
 
-  return { topic, duration, voice, lang, style, speed };
+  if (/\b(en anglais|in english|english)\b/i.test(raw)) params.lang = "English";
+  else if (/\b(en arabe|in arabic|arabic)\b/i.test(raw) || /[\u0600-\u06FF]/.test(raw)) params.lang = "Arabic";
+  else if (/\b(en espagnol|in spanish)\b/i.test(raw)) params.lang = "Spanish";
+
+  // Strip the instruction wrapper so the topic is just the idea.
+  params.topic = raw
+    .replace(/^\s*(?:fais[- ]moi|fait[- ]moi|cr[ée]e|g[ée]n[èe]re|make|create|generate)\b[^,]*?\b(?:reel|video|vid[ée]o|short)\b/i, "")
+    .replace(/^\s*(?:un|une|a|an)\s+(?:reel|short|video|vid[ée]o)\b[^,]*?\b(?:de|en|of|about|sur)\b/i, "")
+    .replace(/\b(?:de|en|of|about)?\s*\d{1,3}\s*(?:secondes?|seconds?|secs?|s\b)/i, "")
+    .replace(/\b(?:swiss|suisse|cyber|matrix|tech|neon|luxury|gold|luxe|fares|editorial)\b/gi, "")
+    .replace(/\b(?:rapide|rapid|fast|snappy|calme|calm|slow|lent)\b/gi, "")
+    .replace(/\b(?:avec|voix|voice|with)\s+(?:la voix\s+)?(Fenrir|Puck|Charon|Kore|Aoede)\b/i, "")
+    .replace(/\b(?:style|look)\s+\w+\b/i, "")
+    .replace(/\b(?:rythme|pace|cadence|speed)\s+\w+\b/i, "")
+    .replace(/\ben (?:anglais|arabe|fran[cç]ais|espagnol)\b/i, "")
+    .replace(/\b(?:en anglais|in english|in arabic|en arabe)\b/i, "")
+    // Leftovers from the instruction wrapper.
+    .replace(/\b(?:rapide|rapid|fast|calme|calm|slow|snappy)\b\s*$/i, "")
+    .replace(/(?:\s+\b(?:en|avec|voix|voice|style|pace|rythme|cadence|de|du|in|with|about)\b)+\s*$/i, "")
+    .replace(/^(?:\s*(?:sur|about|de|du|d'|le|la|les|l'))+\s+/i, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/^[\s,;:–-]+|[\s,;:–-]+$/g, "")
+    .trim();
+
+  if (!params.topic) params.topic = raw;
+  return params;
 }
 
-async function handleMessage(msg) {
-  const chatId = msg.chat.id;
-  const text = msg.text || "";
+function helpText() {
+  const styles = listStyles().map((s) => `• ${s.id} — ${s.name}`).join("\n");
+  return `🎬 Kinetic Reel Engine
 
-  console.log(`[Bot] Message received from chat ${chatId}: "${text}"`);
+Send me an idea and I'll return a finished vertical video: script, voiceover, kinetic captions synced word by word, and generated visuals.
 
-  if (text.startsWith("/start") || text.startsWith("/help")) {
-    const welcome = `
-👋 *Bienvenue sur votre Kinetic Reel Bot !*
+Examples
+• why specialty coffee costs so much
+• 30s reel about compound interest, voice Charon
+• cyber reel in English about quantum computing, rapid
 
-Envoyez-moi simplement votre idée de vidéo, et je vous génère directement le fichier vidéo MP4 en haute définition !
+Styles
+${styles}
 
-🎙️ *Voix Google AI Studio :*
-• *Puck* (Masculin jeune & dynamique - recommandé)
-• *Aoede* (Féminin chaleureux & narratif)
-• *Fenrir* (Masculin grave & puissant)
-• *Charon* (Posé & documentaire)
-• *Kore* (Féminin clair & moderne)
+Commands
+/start or /help — this message
+/styles — list styles
+/status — queue and settings
+`;
+}
 
-🚀 *Exemple :*
-_Fais-moi un reel de 30s sur Pourquoi le café de spécialité coûte si cher avec la voix Puck_
-    `;
-    return sendMessage(chatId, welcome);
-  }
+// --------------------------------------------------------------------------
+// Job queue — one render at a time
+// --------------------------------------------------------------------------
 
-  // Parse prompt
-  const { topic, duration, voice, lang, style, speed } = parseUserPrompt(text);
-  console.log(`[Bot] Parsed: topic="${topic}", duration=${duration}s, voice=${voice}, style=${style}, speed=${speed}`);
+const queue = [];
+let busy = false;
 
-  const statusMsg = await sendMessage(
-    chatId,
-    `🎬 *Demande reçue !*\n\n📌 *Sujet* : ${topic}\n⏱️ *Durée* : ~${duration}s | *Cadence* : ${speed}\n🎨 *Style* : ${style}\n🎙️ *Voix* : ${voice}\n\n⏳ _Génération du script & storyboard en cours..._`
-  );
+function enqueue(job) {
+  queue.push(job);
+  pump();
+}
 
-  const statusMsgId = statusMsg?.result?.message_id;
-
-  async function updateStatus(stepText) {
-    if (!statusMsgId) return;
-    try {
-      await callTelegram("editMessageText", {
-        chat_id: chatId,
-        message_id: statusMsgId,
-        text: `🎬 *Production de votre vidéo en cours...*\n\n📌 *Sujet* : ${topic}\n🎙️ *Voix* : ${voice}\n\n${stepText}`,
-        parse_mode: "Markdown",
-      });
-    } catch {}
-  }
-
+async function pump() {
+  if (busy) return;
+  const job = queue.shift();
+  if (!job) return;
+  busy = true;
   try {
-    const apiKey = getGeminiApiKey();
-    if (!apiKey) throw new Error("Clé GEMINI_API_KEY non configurée.");
-
-    const asciiTopic = topic
-      .toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 20);
-    const slug = asciiTopic.length > 0 ? asciiTopic : "reel";
-    
-    const timestamp = Date.now().toString().slice(-6);
-    const projectDir = resolve(__dirname, `scratch/bot-${slug}-${timestamp}`);
-    const projectAssetsDir = join(projectDir, "assets");
-
-    // Copy template assets
-    const templateAssetsDir = join(__dirname, "templates/assets");
-    const { cpSync, mkdirSync } = await import("node:fs");
-    mkdirSync(projectDir, { recursive: true });
-    if (existsSync(templateAssetsDir)) {
-      cpSync(templateAssetsDir, projectAssetsDir, { recursive: true });
-    }
-    mkdirSync(join(projectAssetsDir, "audio"), { recursive: true });
-    mkdirSync(join(projectAssetsDir, "img"), { recursive: true });
-
-    // Step 1: Storyboard
-    await updateStatus("📝 *Étape 1/5* : Écriture du scénario et des scènes cinétiques...");
-    const storyboard = await generateStoryboard({
-      topic,
-      targetDurationSeconds: duration,
-      language: lang,
-      speed,
-      apiKey,
-    });
-
-    console.log(`[Bot] Storyboard created for "${storyboard.title}": ${storyboard.scenes?.length} scenes`);
-
-    // Step 2: Voiceover
-    await updateStatus(`🎙️ *Étape 2/5* : Synthèse vocale naturelle (Google AI Studio - ${voice})...`);
-    const voiceWavPath = join(projectAssetsDir, "audio/voice.wav");
-    await synthesizeVoiceWithGemini({
-      scriptText: storyboard.fullScript,
-      voiceName: voice,
-      language: lang,
-      apiKey,
-      outputWavPath: voiceWavPath,
-    });
-
-    // Step 3: Hero Images Generation & AI Transparent Cutout
-    await updateStatus("🎨 *Étape 3/5* : Recherche des objets 3D et découpage IA transparent...");
-    for (let idx = 0; idx < storyboard.scenes.length; idx++) {
-      const sc = storyboard.scenes[idx];
-      const heroName = sc.hero_name || `hero_${sc.id}`;
-      const rawHeroPath = join(projectAssetsDir, `img/${heroName}_raw.png`);
-      const finalHeroPath = join(projectAssetsDir, `img/${heroName}.png`);
-      try {
-        await generateHeroImage({
-          prompt: sc.hero_prompt,
-          keyword: sc.keyword,
-          heroTitle: sc.hero_title,
-          heroSearch: sc.hero_search,
-          sceneIndex: idx,
-          outputPngPath: rawHeroPath,
-        });
-        await makeTransparentCutout({
-          inputImagePath: rawHeroPath,
-          outputPngPath: finalHeroPath,
-        });
-      } catch (e) {
-        console.warn(`[Bot Image] Failed for scene ${sc.id}: ${e.message}`);
-      }
-    }
-
-    // Step 4: Alignment & HTML Composition
-    await updateStatus("⏱️ *Étape 4/5* : Synchronisation mot par mot et composition 9:16...");
-    const alignmentResult = alignWordsWithAudio({
-      wavPath: voiceWavPath,
-      scenes: storyboard.scenes,
-      fullScript: storyboard.fullScript,
-      outputJsonPath: join(projectDir, "words.json"),
-    });
-
-    const indexPath = join(projectDir, "index.html");
-    buildCompositionHtml({
-      projectDir,
-      title: storyboard.title || topic,
-      scenes: storyboard.scenes,
-      words: alignmentResult.words,
-      totalDuration: alignmentResult.totalDuration,
-      voiceAudioRel: "assets/audio/voice.wav",
-      styleName: style,
-      speed: speed || "standard",
-      outputPath: indexPath,
-    });
-
-    writeFileSync(join(projectDir, "meta.json"), JSON.stringify({
-      id: slug,
-      name: slug,
-      createdAt: new Date().toISOString()
-    }, null, 2), "utf8");
-
-    writeFileSync(join(projectDir, "hyperframes.json"), JSON.stringify({
-      width: 1080,
-      height: 1920,
-      fps: 30,
-      duration: alignmentResult.totalDuration,
-    }, null, 2), "utf8");
-
-    // Step 5: Headless Render to MP4
-    await updateStatus("🎥 *Étape 5/5* : Rendu vidéo MP4 en haute définition (1080x1920)... Cela prend environ 1 minute.");
-    const rawMp4Path = join(projectDir, `${slug}-raw.mp4`);
-    renderVideoToMp4({
-      projectDir,
-      outputMp4Path: rawMp4Path,
-    });
-
-    // Fast mobile optimization (compresses 20MB -> 4MB for instant Telegram delivery)
-    const optMp4Path = join(projectDir, `${slug}.mp4`);
-    const ffmpegBin = getFfmpegPath();
-    spawnSync(ffmpegBin, [
-      "-y",
-      "-i", rawMp4Path,
-      "-c:v", "libx264",
-      "-crf", "23",
-      "-preset", "veryfast",
-      "-c:a", "aac",
-      "-b:a", "160k",
-      optMp4Path
-    ]);
-
-    const finalVideoPath = existsSync(optMp4Path) ? optMp4Path : rawMp4Path;
-
-    // Upload Video to Telegram
-    await updateStatus("📤 *Envoi de la vidéo vers votre téléphone...*");
-    const caption = `🎬 *${storyboard.title || topic}*\n\n⏱️ Durée : ${alignmentResult.totalDuration}s\n🎙️ Voix : Google AI Studio (${voice})\n✨ Format : 1080x1920 (9:16)`;
-    
-    await sendVideo(chatId, finalVideoPath, caption);
-    await updateStatus("✅ *Vidéo terminée et envoyée ! Regardez ci-dessous 👇*");
+    await job();
   } catch (err) {
-    console.error("Bot error:", err);
-    await sendMessage(chatId, `❌ *Erreur lors de la création :*\n\`${err.message}\``);
+    console.error("[Queue] job failed:", err.message);
+  } finally {
+    busy = false;
+    pump();
   }
 }
 
-// Long Polling Loop
-let lastUpdateId = 0;
-async function pollUpdates() {
-  try {
-    const res = await callTelegram("getUpdates", {
-      offset: lastUpdateId + 1,
-      timeout: 25,
-    });
+// --------------------------------------------------------------------------
+// Message handling
+// --------------------------------------------------------------------------
 
+async function handleMessage(message) {
+  const chatId = message.chat.id;
+  const text = String(message.text || "").trim();
+  if (!text) return;
+
+  if (/^\/(start|help)\b/.test(text)) return void (await sendMessage(chatId, helpText()));
+  if (/^\/styles\b/.test(text)) {
+    return void (await sendMessage(chatId, listStyles().map((s) => `${s.id} — ${s.description}`).join("\n\n")));
+  }
+  if (/^\/status\b/.test(text)) {
+    return void (await sendMessage(
+      chatId,
+      `Queue: ${queue.length} waiting${busy ? " (1 rendering)" : ""}\nVoice: ${VOICES.join(", ")}\nAspect: 9:16`,
+    ));
+  }
+
+  const prompt = parsePrompt(text.slice(0, MAX_TOPIC_LENGTH));
+  const styles = listStyles();
+  const params = {
+    topic: prompt.topic,
+    duration: prompt.duration,
+    voice: prompt.voice,
+    speed: prompt.speed,
+    style: prompt.style || "fares-editorial",
+    lang: prompt.lang,
+    aspect: "9:16",
+  };
+
+  const position = queue.length + (busy ? 1 : 0);
+  const status = await sendMessage(
+    chatId,
+    `🎬 Generating\n\nTopic: ${params.topic}\nLength: ~${params.duration}s · ${params.speed}\nStyle: ${params.style}\nVoice: ${params.voice}` +
+      (position ? `\n\nPosition in queue: ${position}` : "") +
+      `\n\nStyles available: ${styles.length}. Send /styles to change.`,
+  );
+  const statusId = status?.result?.message_id;
+
+  enqueue(async () => {
+    const started = Date.now();
+    const stages = [];
+    const update = async (line) => {
+      stages.push(line);
+      if (statusId) await editMessage(chatId, statusId, `🎬 Generating\n\nTopic: ${params.topic}\n\n${stages.join("\n")}`);
+    };
+
+    try {
+      const result = await produceReel({
+        ...params,
+        onStage: ({ key, label }) => {
+          void update(`→ ${label}…`);
+        },
+        log: (line) => console.log(`[Bot] ${line}`),
+      });
+
+      const caption =
+        `🎬 ${result.storyboard.title}\n` +
+        `${Math.round(result.totalDuration)}s · ${params.aspect} · ${params.style}\n` +
+        `Word sync: ${result.timingSource}`;
+
+      await sendVideo(chatId, result.mp4Path, caption);
+      if (result.coverPath && existsSync(result.coverPath)) {
+        try {
+          const form = new FormData();
+          form.append("chat_id", String(chatId));
+          form.append("caption", "Suggested cover frame");
+          form.append("photo", await openAsBlob(result.coverPath), "cover.jpg");
+          await fetch(`${API}/sendPhoto`, { method: "POST", body: form });
+        } catch (err) {
+          console.warn("[Bot] cover upload skipped:", err.message);
+        }
+      }
+      if (statusId) {
+        await editMessage(
+          chatId,
+          statusId,
+          `✅ Done in ${((Date.now() - started) / 1000).toFixed(0)}s\n\n${stages.slice(-4).join("\n")}`,
+        );
+      }
+      for (const warning of result.warnings) {
+        await sendMessage(chatId, `⚠️ ${warning}`);
+      }
+    } catch (err) {
+      console.error("[Bot] render failed:", err);
+      if (statusId) await editMessage(chatId, statusId, `❌ Generation failed\n\n${err.message}`);
+      else await sendMessage(chatId, `❌ Generation failed: ${err.message}`);
+    }
+  });
+}
+
+// --------------------------------------------------------------------------
+// Long polling with a persisted offset
+// --------------------------------------------------------------------------
+
+function loadOffset() {
+  try {
+    if (!existsSync(OFFSET_FILE)) return 0;
+    return Number(JSON.parse(readFileSync(OFFSET_FILE, "utf8")).offset) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveOffset(offset) {
+  try {
+    writeFileSync(OFFSET_FILE, JSON.stringify({ offset, at: new Date().toISOString() }), "utf8");
+  } catch (err) {
+    console.warn("[Bot] could not persist the update offset:", err.message);
+  }
+}
+
+let lastUpdateId = loadOffset();
+if (lastUpdateId) console.log(`[Bot] resuming after update ${lastUpdateId} (no replay of old messages)`);
+
+async function poll() {
+  try {
+    const res = await callTelegram("getUpdates", { offset: lastUpdateId + 1, timeout: 25 });
     if (res.ok && Array.isArray(res.result)) {
       for (const update of res.result) {
         lastUpdateId = update.update_id;
-        if (update.message && update.message.text) {
-          handleMessage(update.message).catch(console.error);
+        saveOffset(lastUpdateId);
+        const message = update.message || update.edited_message;
+        if (message?.text) {
+          handleMessage(message).catch((err) => console.error("[Bot] handler error:", err.message));
         }
       }
+    } else if (!res.ok) {
+      console.warn("[Bot] getUpdates:", res.description || "unknown error");
+      await sleep(3000);
     }
   } catch (err) {
-    await new Promise((r) => setTimeout(r, 3000));
+    console.warn("[Bot] polling error:", err.message);
+    await sleep(3000);
   }
-  setImmediate(pollUpdates);
+  setImmediate(poll);
 }
 
-console.log("\n=======================================================");
-console.log(" 🤖 BOT TELEGRAM KINETIC REEL CONNECTÉ !");
-console.log(" En attente de vos messages depuis votre téléphone...");
-console.log("=======================================================\n");
+if (isMain) {
+  console.log("=======================================================");
+  console.log(" 🤖 KINETIC REEL BOT — send an idea, receive a video");
+  console.log(`    styles: ${listStyles().map((s) => s.id).join(", ")}`);
+  console.log(`    api key: ${getGeminiApiKey() ? "GEMINI_API_KEY ✓" : "MISSING — set GEMINI_API_KEY before rendering"}`);
+  console.log("=======================================================");
+  poll();
+}
 
-pollUpdates();
+export { escapeMarkdown, helpText };

@@ -1,16 +1,35 @@
 {
   "name": "kinetic-reel-engine",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
-  "description": "Automated Kinetic Editorial Reel generator with Google AI Studio voices and HyperFrames",
+  "description": "One prompt in, one finished vertical video out. AI script + voiceover + word-synced kinetic captions + generated hero art, rendered to MP4 with HyperFrames.",
   "main": "create-reel.mjs",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
-    "create-reel": "./create-reel.mjs"
+    "kinetic-reel": "./create-reel.mjs"
   },
   "scripts": {
-    "start": "node create-reel.mjs"
+    "start": "node create-reel.mjs",
+    "reel": "node create-reel.mjs",
+    "bot": "node telegram-bot.mjs",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "vendor": "node scripts/vendor-runtime.mjs",
+    "demo": "node create-reel.mjs \"why specialty coffee costs so much\" --mock --skip-render"
   },
+  "keywords": [
+    "video",
+    "reels",
+    "shorts",
+    "tiktok",
+    "gemini",
+    "tts",
+    "kinetic-typography",
+    "hyperframes"
+  ],
+  "license": "MIT",
   "dependencies": {
-    "hyperframes": "^0.8.111"
+    "hyperframes": "^0.8.138"
   }
 }

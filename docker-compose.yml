@@ -1,9 +1,20 @@
 services:
   kinetic-bot:
     build: .
-    restart: always
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      # Chromium needs more shared memory than Docker's 64 MB default.
+      NODE_ENV: production
+    shm_size: 1gb
     volumes:
+      # Generated projects (MP4s, covers, frames) survive restarts.
       - ./scratch:/app/scratch
+    # One render at a time keeps memory bounded; the bot queues internally.
+    deploy:
+      resources:
+        limits:
+          memory: 4g

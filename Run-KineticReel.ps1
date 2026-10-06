@@ -1,31 +1,28 @@
+# Kinetic Reel Engine — interactive launcher for Windows PowerShell.
+# Keeps no machine-specific paths: FFmpeg is resolved from PATH (or FFMPEG_PATH).
 param(
     [string]$Topic,
     [int]$Duration = 30,
-    [string]$Voice = "Puck",
-    [string]$Lang = "French",
-    [string]$ApiKey
+    [string]$Voice = "Fenrir",
+    [string]$Style = "fares-editorial",
+    [string]$Pace = "standard",
+    [string]$Lang,
+    [string]$Aspect = "9:16"
 )
 
-# Assurer FFmpeg dans le PATH
-$env:Path = "C:\Users\bbouzid\AppData\Local\Scoop\shims;" + $env:Path
+$ErrorActionPreference = "Stop"
 
-if (-not $ApiKey -and -not $env:GEMINI_API_KEY) {
-    Write-Host "Veuillez entrer votre cle Google AI Studio (GEMINI_API_KEY):" -ForegroundColor Yellow
-    $ApiKey = Read-Host
-    if ($ApiKey) {
-        $env:GEMINI_API_KEY = $ApiKey
-    }
+if (-not $env:GEMINI_API_KEY) {
+    $secure = Read-Host "Google AI Studio key (GEMINI_API_KEY)" -AsSecureString
+    $env:GEMINI_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
 }
 
-if (-not $Topic) {
-    Write-Host "Entrez le sujet de votre video (ex: Pourquoi le cafe de specialite coute si cher):" -ForegroundColor Cyan
-    $Topic = Read-Host
-}
+if (-not $Topic) { $Topic = Read-Host "Topic or idea" }
+if (-not $Topic) { Write-Host "No topic given — nothing to do." -ForegroundColor Red; exit 1 }
 
-if (-not $Topic) {
-    Write-Host "Aucun sujet specifie. Annulation." -ForegroundColor Red
-    exit 1
-}
+$script = Join-Path $PSScriptRoot "create-reel.mjs"
+$args = @($script, $Topic, "--duration", $Duration, "--voice", $Voice, "--style", $Style, "--pace", $Pace, "--aspect", $Aspect)
+if ($Lang) { $args += @("--lang", $Lang) }
 
-$scriptPath = Join-Path $PSScriptRoot "create-reel.mjs"
-node $scriptPath --topic "$Topic" --duration $Duration --voice "$Voice" --lang "$Lang"
+node @args
