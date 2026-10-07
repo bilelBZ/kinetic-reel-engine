@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { produceReel, STAGES } from "./lib/pipeline.mjs";
 import { listStyles } from "./lib/styles/index.mjs";
-import { getGeminiApiKey, listVoices } from "./lib/gemini-ai.mjs";
+import { getGeminiApiKey, listVoices, PREBUILT_VOICES } from "./lib/gemini-ai.mjs";
 import { SCENE_TONES } from "./lib/voice-direction.mjs";
 import { hasFfmpeg, parseArgs, positionalArgs, flag, flagNumber, flagBool } from "./lib/env.mjs";
 
@@ -106,10 +106,26 @@ async function main() {
       }
       console.log(`\nUse one with:  --voice <id>`);
     } catch (error) {
-      const reason = /fetch failed/i.test(String(error.message))
-        ? "could not reach the Gemini API — check your connection or the key"
-        : error.message;
-      console.error(`❌ ${reason}`);
+      if (/fetch failed|ENOTFOUND|EAI_AGAIN/i.test(String(error.message))) {
+        console.error("❌ could not reach the Gemini API — check this machine's network access to Google.");
+        console.error("   The key was not rejected, it was never delivered.");
+      } else if ([400, 401, 403].includes(error.status)) {
+        console.error(`❌ key rejected (HTTP ${error.status}) — GEMINI_API_KEY is wrong, expired or restricted.`);
+        console.error("   Make a fresh one at https://aistudio.google.com/apikey (it will start with AQ.).");
+      } else if (error.status) {
+        console.error(`❌ voice library returned HTTP ${error.status}: ${error.message.slice(0, 160)}`);
+        console.error("   Falling back to the curated voice list below.");
+      } else {
+        console.error(`❌ ${error.message}`);
+      }
+      if (error.status && ![400, 401, 403].includes(error.status)) {
+        console.log("\nCurated prebuilt voices:\n");
+        for (const voice of PREBUILT_VOICES) {
+          console.log(`  ${voice.id.padEnd(16)} ${voice.character}`);
+        }
+        console.log("\nUse one with:  --voice <id>");
+        process.exit(0);
+      }
       process.exit(1);
     }
     process.exit(0);

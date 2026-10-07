@@ -138,3 +138,15 @@ test("segment text is what is spoken, and it is never empty", () => {
     assert.ok(segment.style.length > 0);
   }
 });
+
+test("the curated voice list is intact and usable as a fallback", async () => {
+  const { PREBUILT_VOICES } = await import("../lib/gemini-ai.mjs");
+  assert.equal(PREBUILT_VOICES.length, 30, "the documented studio list has 30 voices");
+  assert.equal(new Set(PREBUILT_VOICES.map((v) => v.id)).size, 30, "voice ids must be unique");
+  for (const voice of PREBUILT_VOICES) {
+    assert.ok(voice.id && voice.character, `incomplete entry: ${JSON.stringify(voice)}`);
+  }
+  // The CLI default and the documented ladder must both be real entries.
+  assert.ok(PREBUILT_VOICES.some((v) => v.id === "Fenrir"));
+  assert.ok(PREBUILT_VOICES.some((v) => v.id === "Charon"));
+});

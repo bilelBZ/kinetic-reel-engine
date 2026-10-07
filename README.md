@@ -101,6 +101,25 @@ cd scratch/<project> && npx hyperframes preview
 
 ---
 
+## First run — check the key before anything else
+
+```bash
+node create-reel.mjs --list-voices --lang fr-FR
+```
+
+That is a single metadata call: it needs a key and nothing else — no FFmpeg, no
+Chromium, no topic. If it prints voices, your key works and the network path to
+Google is open. If it prints `key rejected`, the problem is the key; if it prints
+`could not reach`, the problem is the network. Either way you find out in a
+second instead of three minutes into a render.
+
+AI Studio now issues keys that start with `AQ.`. Legacy `AIza...` keys are being
+retired — unrestricted ones were rejected from June 2026 — so if you have an old
+key, make a new one. Both formats work here: the key always travels in the
+`x-goog-api-key` header, never in a URL.
+
+---
+
 ## Voice direction — making the read sound human
 
 The TTS engine treats its input as a **verbatim transcript**: it reads what you
