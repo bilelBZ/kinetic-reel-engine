@@ -101,6 +101,86 @@ cd scratch/<project> && npx hyperframes preview
 
 ---
 
+## Voice direction — making the read sound human
+
+The TTS engine treats its input as a **verbatim transcript**: it reads what you
+give it, including anything that looks like a note to itself. Getting a
+performance out of it therefore means putting the right things in the right
+place, which is what `lib/voice-direction.mjs` does.
+
+### The four levers
+
+| Lever | Where it goes | What it does |
+| --- | --- | --- |
+| **Emotion** | one short `style` string per scene | the toned arc of the read |
+| **Pauses** | silence inserted between turns, plus `<short pause>` / `<breath>` inline | the breathing room |
+| **Emphasis** | the scene's `keyword`, capitalised in the transcript only | lands the important word |
+| **Voice** | the voice library or a voice you designed | the identity |
+
+The caption text is never touched: emphasis exists only in the audio transcript,
+so your on-screen words stay clean.
+
+### Two delivery modes
+
+```bash
+# default — one TTS turn per scene, each with its own emotion
+node create-reel.mjs "why espresso costs so much" --delivery scene --pause 1.2
+
+# one flat turn for the whole script: cheaper, no join artefacts
+node create-reel.mjs "why espresso costs so much" --delivery single
+```
+
+Per-scene emotion is only reachable by splitting the script: the model cannot
+shift prosody inside a single turn. In `scene` mode each scene gets a tone from
+a fixed vocabulary (`hook`, `intrigue`, `authority`, `warm`, `tense`, `hype`,
+`wry`, `reflective`, `payoff`, `cta`), the storyboard picks them across the arc,
+and the turns are joined with silence computed from the tone of the *hinge*
+between them. If a scene-by-scene generation fails, the run falls back to a
+single turn and says so rather than producing nothing.
+
+`--pause` scales the whole rhythm: `0.5` is tight and urgent, `1.5` is
+theatrical. The last scene always keeps a tail so the final word is never
+clipped.
+
+### Choosing a voice
+
+The five names in `--voice` are only the curated shortlist. Two better options:
+
+**Browse the library.** Hundreds of voices with language, accent, pitch and
+domain metadata — this is how a French reel gets a French voice instead of an
+English voice reading French:
+
+```bash
+node create-reel.mjs --list-voices --lang fr-FR
+node create-reel.mjs --list-voices --accent French --gender female --pitch low
+node create-reel.mjs --list-voices --context Audiobook --search warm
+```
+
+**Design the voice in Google AI Studio.** Open
+[AI Studio → Generate speech](https://aistudio.google.com/generate-speech),
+describe the persona you want, audition samples until it is right, then reuse
+the persistent voice ID it gives you:
+
+```bash
+node create-reel.mjs "your topic" --voice voice_abc123
+```
+
+Designing the persona once and reusing the ID is what keeps the voice identical
+across scenes and across reels. Long descriptive style blocks are explicitly
+the wrong tool — they are the most common cause of voice drift — so this engine
+keeps every style string to one short clause and strips anything that tries to
+change age, gender or accent (those are properties of the voice, not of the
+performance).
+
+### Reading the model ladder
+
+`gemini-3.8-flash-tts` is the expressive one — nuanced acting, heavy vocal
+bursts, difficult pronunciations. `gemini-3.8-flash-lite-tts` is the workhorse
+for volume, and the pipeline rotates to it automatically on quota. Nothing to
+configure.
+
+---
+
 ## The pipeline
 
 ```
@@ -172,7 +252,7 @@ See [CLOUD_DEPLOY.md](CLOUD_DEPLOY.md).
 ## Tests
 
 ```bash
-npm test        # 28 tests: timing alignment, caption fitting, audio graph, parser, assets
+npm test        # 41 tests: timing alignment, caption fitting, voice direction, audio graph, parser, assets
 npm run demo    # offline end-to-end project build, no API key needed
 ```
 

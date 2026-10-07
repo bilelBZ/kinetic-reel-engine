@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { produceReel, STAGES } from "./lib/pipeline.mjs";
 import { listStyles } from "./lib/styles/index.mjs";
-import { getGeminiApiKey } from "./lib/gemini-ai.mjs";
+import { getGeminiApiKey, listVoices } from "./lib/gemini-ai.mjs";
+import { SCENE_TONES } from "./lib/voice-direction.mjs";
 import { hasFfmpeg, parseArgs, positionalArgs, flag, flagNumber, flagBool } from "./lib/env.mjs";
 
 /**
@@ -28,6 +29,16 @@ CORE OPTIONS
   -l, --lang <language>    French, English, Arabic, Spanish…   (auto-detected)
       --pace <preset>      calm | standard | rapid             (default standard)
       --aspect <ratio>     9:16 | 4:5 | 1:1 | 16:9             (default 9:16)
+
+VOICE OPTIONS
+      --delivery <mode>    scene | single                       (default scene)
+                           scene: one TTS turn per scene, each with its own
+                           emotion — the narrator actually performs the arc.
+                           single: one flat turn, cheaper, no join artefacts.
+      --pause <scale>      Breath scaling, 0.5 tight → 1.5 theatrical  (default 1)
+      --list-voices        Browse the Google voice library, then exit.
+                           Filters: --lang fr-FR --accent French --gender female
+                                    --pitch low --context Audiobook --search warm
 
 QUALITY OPTIONS
       --image-quality <t>  high (fast) | max (best models first)   (default high)
@@ -106,6 +117,36 @@ async function main() {
   }
 
   const apiKey = flag(flags, "key", "k");
+
+  // --- Browse the voice library, then exit ---------------------------------
+  if (flagBool(flags, "list-voices")) {
+    try {
+      const voices = await listVoices({
+        apiKey: apiKey || undefined,
+        language: flag(flags, "lang", "l") || null,
+        accent: flag(flags, "accent") || null,
+        gender: flag(flags, "gender") || null,
+        pitch: flag(flags, "pitch") || null,
+        context: flag(flags, "context") || null,
+        search: flag(flags, "search") || null,
+        type: flag(flags, "voice-type") || "prebuilt",
+      });
+      if (!voices.length) {
+        console.log("No voices matched. Try dropping a filter.");
+      }
+      for (const voice of voices) {
+        console.log(
+          `${voice.id}  ${voice.name}  [${[voice.language, voice.accent, voice.gender, voice.pitch].filter(Boolean).join(", ")}]`
+        );
+        if (voice.description) console.log(`    ${voice.description.slice(0, 140)}`);
+      }
+      console.log(`\nUse one with:  --voice <id>`);
+    } catch (error) {
+      console.error(`❌ ${error.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   const options = {
     topic,
     duration: flagNumber(flags, 30, "duration", "d"),
@@ -118,6 +159,8 @@ async function main() {
     outDir: flag(flags, "out-dir") ? resolve(String(flag(flags, "out-dir"))) : null,
     quality: String(flag(flags, "render-quality") || "high"),
     imageQuality: String(flag(flags, "image-quality") || "high"),
+    delivery: String(flag(flags, "delivery") || "scene"),
+    pauseScale: flagNumber(flags, 1, "pause"),
     fps: flagNumber(flags, null, "fps"),
     taps: !flagBool(flags, "no-taps"),
     music: flag(flags, "music") ? resolve(String(flag(flags, "music"))) : null,
@@ -130,6 +173,11 @@ async function main() {
     contactSheet: flagBool(flags, "contact-sheet"),
     log: jsonOut ? () => {} : console.log,
   };
+
+  if (!["scene", "single"].includes(options.delivery)) {
+    console.error(`❌ Unknown --delivery "${options.delivery}" — use scene or single.`);
+    process.exit(1);
+  }
 
   if (apiKey) process.env.GEMINI_API_KEY = String(apiKey);
 

@@ -41,6 +41,14 @@ on:
         description: 'Image quality (high, max)'
         required: true
         default: 'high'
+      delivery:
+        description: 'Voice delivery (scene = per-scene emotion, single = one flat turn)'
+        required: true
+        default: 'scene'
+      pause_scale:
+        description: 'Breath scaling (0.5 tight, 1 natural, 1.5 theatrical)'
+        required: true
+        default: '1'
       chat_id:
         description: 'Telegram chat id (optional, digits only)'
         required: false
@@ -62,6 +70,8 @@ jobs:
       PACE: ${{ inputs.pace }}
       ASPECT: ${{ inputs.aspect }}
       IMAGE_QUALITY: ${{ inputs.image_quality }}
+      DELIVERY: ${{ inputs.delivery }}
+      PAUSE_SCALE: ${{ inputs.pause_scale }}
       CHAT_ID: ${{ inputs.chat_id }}
       # Applies to every npx call in the job (vendor, check, render).
       HYPERFRAMES_NO_UPDATE_CHECK: '1'
@@ -103,6 +113,7 @@ jobs:
             --pace "$PACE" \
             --aspect "$ASPECT" \
             --image-quality "$IMAGE_QUALITY" \
+            --delivery "$DELIVERY" --pause "$PAUSE_SCALE" \
             --contact-sheet \
             --output "final-reel.mp4" \
             --json > result.json
