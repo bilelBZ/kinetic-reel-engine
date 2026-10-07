@@ -83,46 +83,10 @@ async function main() {
     return;
   }
 
-  // The topic can be positional or passed via --topic. Values belonging to
-  // other flags must never end up in it (see positionalArgs).
-  const topicArg = flag(flags, "topic", "t");
-  const topic =
-    (typeof topicArg === "string" && topicArg) || positionalArgs().join(" ").trim();
-
-  if (!topic) {
-    console.log(USAGE);
-    process.exitCode = 1;
-    return;
-  }
-
-  const mock = flagBool(flags, "mock");
-  const skipRender = flagBool(flags, "skip-render");
-  const jsonOut = flagBool(flags, "json");
-
-  // FFmpeg is only strictly required for rendering and audio normalisation —
-  // `--skip-render` runs (project inspection, CI lint) are allowed without it.
-  if (!hasFfmpeg() && !skipRender) {
-    console.error("❌ FFmpeg is required to render (audio normalisation, muxing, cover frames).");
-    console.error("   Install FFmpeg, set FFMPEG_PATH, or use --skip-render to build the project only.");
-    process.exit(1);
-  }
-  if (!hasFfmpeg() && skipRender) {
-    console.warn("⚠️  FFmpeg not found — building the project only (durations will be estimated).");
-  }
-  if (!mock && !getGeminiApiKey()) {
-    console.error("❌ GEMINI_API_KEY is required (script, voice, images, timing).");
-    console.error("   Set it in the environment, in .env, or pass --key.");
-    console.error("   Tip: `--mock` builds a full project offline with placeholder assets.");
-    process.exit(1);
-  }
-
-  const apiKey = flag(flags, "key", "k");
-
-  // --- Browse the voice library, then exit ---------------------------------
   if (flagBool(flags, "list-voices")) {
     try {
       const voices = await listVoices({
-        apiKey: apiKey || undefined,
+        apiKey: flag(flags, "key", "k") || undefined,
         language: flag(flags, "lang", "l") || null,
         accent: flag(flags, "accent") || null,
         gender: flag(flags, "gender") || null,
@@ -142,11 +106,54 @@ async function main() {
       }
       console.log(`\nUse one with:  --voice <id>`);
     } catch (error) {
-      console.error(`❌ ${error.message}`);
+      const reason = /fetch failed/i.test(String(error.message))
+        ? "could not reach the Gemini API — check your connection or the key"
+        : error.message;
+      console.error(`❌ ${reason}`);
       process.exit(1);
     }
     process.exit(0);
   }
+
+  // --- Voice library browse, then exit ------------------------------------
+  // The topic can be positional or passed via --topic. Values belonging to
+  // other flags must never end up in it (see positionalArgs).
+  const topicArg = flag(flags, "topic", "t");
+  const topic =
+    (typeof topicArg === "string" && topicArg) || positionalArgs().join(" ").trim();
+
+  if (!topic) {
+    console.log(USAGE);
+    process.exitCode = 1;
+    return;
+  }
+
+  const mock = flagBool(flags, "mock");
+  const skipRender = flagBool(flags, "skip-render");
+  const jsonOut = flagBool(flags, "json");
+  // Browsing the voice library is a metadata call — no local toolchain needed.
+  const listVoicesOnly = flagBool(flags, "list-voices");
+
+  // FFmpeg is only strictly required for rendering and audio normalisation —
+  // `--skip-render` runs (project inspection, CI lint) are allowed without it.
+  if (!hasFfmpeg() && !skipRender && !listVoicesOnly) {
+    console.error("❌ FFmpeg is required to render (audio normalisation, muxing, cover frames).");
+    console.error("   Install FFmpeg, set FFMPEG_PATH, or use --skip-render to build the project only.");
+    process.exit(1);
+  }
+  if (!hasFfmpeg() && skipRender && !listVoicesOnly) {
+    console.warn("⚠️  FFmpeg not found — building the project only (durations will be estimated).");
+  }
+  if (!mock && !getGeminiApiKey() && !listVoicesOnly) {
+    console.error("❌ GEMINI_API_KEY is required (script, voice, images, timing).");
+    console.error("   Set it in the environment, in .env, or pass --key.");
+    console.error("   Tip: `--mock` builds a full project offline with placeholder assets.");
+    process.exit(1);
+  }
+
+  const apiKey = flag(flags, "key", "k");
+
+  // --- Browse the voice library, then exit ---------------------------------
   const options = {
     topic,
     duration: flagNumber(flags, 30, "duration", "d"),
