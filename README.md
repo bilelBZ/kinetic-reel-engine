@@ -67,6 +67,55 @@ node create-reel.mjs `
 
 ---
 
+## 📰 Mode News-Reel (extraits YouTube réels)
+
+`create-news-reel.mjs` reproduit le workflow éditorial quotidien : télécharger
+**uniquement le passage** d'une vidéo YouTube récente, le recadrer en 9:16,
+générer des **captions karaoké** (Anton, mot actif en jaune) avec timestamps
+Whisper au millième de seconde, puis assembler le MP4 final avec teaser,
+hook highlight, badge animé et écran de fin CTA.
+
+Prérequis : `yt-dlp` (`pip install yt-dlp`) et, pour l'alignement précis,
+`faster-whisper` (`pip install faster-whisper`). Sans Whisper, le pipeline
+utilise les sous-titres auto YouTube en fallback.
+
+```powershell
+node create-news-reel.mjs `
+  --video "https://www.youtube.com/watch?v=10WEvfjwkIk" `
+  --start 07:35 --end 08:06 `
+  --teaser 07:58-08:02 `
+  --hook "GAZOLE : -12 À -18 CENTIMES ?" `
+  --badge "-18 CTS" `
+  --cta "VOUS EN PENSEZ QUOI ?" `
+  --keywords "gazole,centimes" `
+  --lang fr `
+  --title "Gazole : Lecornu promet -12 à -18 centimes le litre" `
+  --description "Ce soir, Sébastien Lecornu a annoncé..." `
+  --hashtags "#Gazole #Carburant #PouvoirDAchat" `
+  --pinned "12 à 18 centimes de moins le litre : vous y croyez ?" `
+  --package ./package.json
+```
+
+### Options du mode news :
+| Option | Description |
+| :--- | :--- |
+| `--video`, `-u` | URL YouTube *(requis, sauf avec `--local-video`)* |
+| `--local-video` | Fichier vidéo local à la place d'une URL YouTube (utile quand YouTube bloque le téléchargement) |
+| `--start`, `-s` / `--end`, `-e` | Passage `MM:SS` *(requis)* — seul ce segment est téléchargé |
+| `--teaser` | Teaser 0–3s `"MM:SS-MM:SS"` placé devant, transition flash blanc |
+| `--hook` | Barre highlight (noir sur jaune) en haut, slide-in |
+| `--badge` / `--badge-at` | Badge animé qui pop sur le chiffre (défaut : 1er mot-clé détecté) |
+| `--cta` | Écran de fin noir + question highlight |
+| `--keywords`, `-k` | Mots-clés (les chiffres sont auto-détectés comme mots-clés) |
+| `--lang`, `-l` | `fr` `de` `ar` `en` — langue Whisper + direction du texte |
+| `--focus-x` | Cadrage horizontal 0..1 pour centrer l'orateur (défaut 0.5) |
+| `--package` | Chemin du package de publication JSON (titre, description, hashtags, commentaire épinglé, source, miniature) |
+| `--skip-render` | Génère le projet HTML sans lancer le rendu MP4 |
+
+Style utilisé : `news-viral` (karaoke Anton, mot actif `#FFD60A`).
+
+---
+
 ## 🤖 Lancement du Bot Telegram
 
 ```powershell
