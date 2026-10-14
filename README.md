@@ -99,7 +99,8 @@ node create-news-reel.mjs `
 ### Options du mode news :
 | Option | Description |
 | :--- | :--- |
-| `--video`, `-u` | URL YouTube *(requis)* |
+| `--video`, `-u` | URL YouTube *(requis, sauf avec `--local-video`)* |
+| `--local-video` | Fichier vidéo local à la place d'une URL YouTube (utile quand YouTube bloque le téléchargement) |
 | `--start`, `-s` / `--end`, `-e` | Passage `MM:SS` *(requis)* — seul ce segment est téléchargé |
 | `--teaser` | Teaser 0–3s `"MM:SS-MM:SS"` placé devant, transition flash blanc |
 | `--hook` | Barre highlight (noir sur jaune) en haut, slide-in |
