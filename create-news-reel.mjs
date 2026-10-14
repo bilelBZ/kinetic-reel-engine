@@ -8,6 +8,7 @@ import {
   parseTimestamp,
   formatTimestamp,
   downloadSection,
+  trimLocalSection,
   extractAudioWav,
   probeVideo,
   cropToVertical,
@@ -26,7 +27,7 @@ const LANG_MAP = { fr: "fr", french: "fr", de: "de", german: "de", ar: "ar", ara
 function parseArgs() {
   const args = process.argv.slice(2);
   const p = {
-    video: null, start: null, end: null,
+    video: null, localVideo: null, start: null, end: null,
     teaser: null, hook: null, badge: null, badgeAt: null, cta: null,
     keywords: [], lang: "fr",
     title: "News Reel", description: "", hashtags: "", pinned: "",
@@ -35,6 +36,7 @@ function parseArgs() {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--video" || a === "-u") p.video = args[++i];
+    else if (a === "--local-video") p.localVideo = args[++i];
     else if (a === "--start" || a === "-s") p.start = args[++i];
     else if (a === "--end" || a === "-e") p.end = args[++i];
     else if (a === "--teaser") p.teaser = args[++i];
@@ -60,7 +62,8 @@ function usage() {
   console.log(`
 Usage: node create-news-reel.mjs --video <URL> --start MM:SS --end MM:SS [options]
 
-  --video, -u      YouTube URL (requis)
+  --video, -u      YouTube URL (requis, sauf si --local-video)
+  --local-video    Fichier vidéo local (saute le téléchargement YouTube)
   --start, -s      Début du passage, ex: 07:35 (requis)
   --end, -e        Fin du passage, ex: 08:06 (requis)
   --teaser         Teaser 0-3s, ex: "07:58-08:02" (le moment fort d'abord)
@@ -93,9 +96,13 @@ async function main() {
   console.log("=======================================================\n");
 
   const p = parseArgs();
-  if (!p.video || !p.start || !p.end) {
+  if ((!p.video && !p.localVideo) || !p.start || !p.end) {
     usage();
-    process.exit(p.video || p.start || p.end ? 1 : 0);
+    process.exit(1);
+  }
+  if (p.localVideo && !existsSync(p.localVideo)) {
+    console.error(`❌ Fichier local introuvable: ${p.localVideo}`);
+    process.exit(1);
   }
 
   const whisperLang = LANG_MAP[String(p.lang).toLowerCase()] || "fr";
@@ -119,19 +126,29 @@ async function main() {
     cpSync(templateAssetsDir, assetsDir, { recursive: true });
   }
 
-  // ---- Stage 1: download sections
-  console.log("\n[1/7] ⬇️  Téléchargement du passage YouTube...");
+  // ---- Stage 1: get the main passage (YouTube section OR local file trim)
   const mainLandscape = join(projectDir, "clip-main-landscape.mp4");
-  downloadSection({ videoUrl: p.video, start: p.start, end: p.end, outputMp4Path: mainLandscape });
+  if (p.localVideo) {
+    console.log("\n[1/7] ✂️  Découpe du passage depuis le fichier local...");
+    trimLocalSection({ inputVideo: resolve(p.localVideo), start: p.start, end: p.end, outputVideo: mainLandscape });
+  } else {
+    console.log("\n[1/7] ⬇️  Téléchargement du passage YouTube...");
+    downloadSection({ videoUrl: p.video, start: p.start, end: p.end, outputMp4Path: mainLandscape });
+  }
 
   let teaserEnd = null;
   let mainVertical = join(projectDir, "clip-vertical.mp4");
   if (p.teaser) {
-    console.log("\n[2/7] ⚡ Téléchargement du teaser...");
     const { start: tStart, end: tEnd } = parseRange(p.teaser);
     const teaserLandscape = join(projectDir, "clip-teaser-landscape.mp4");
     const teaserVertical = join(projectDir, "clip-teaser-vertical.mp4");
-    downloadSection({ videoUrl: p.video, start: tStart, end: tEnd, outputMp4Path: teaserLandscape });
+    if (p.localVideo) {
+      console.log("\n[2/7] ⚡ Découpe du teaser (fichier local)...");
+      trimLocalSection({ inputVideo: resolve(p.localVideo), start: tStart, end: tEnd, outputVideo: teaserLandscape });
+    } else {
+      console.log("\n[2/7] ⚡ Téléchargement du teaser...");
+      downloadSection({ videoUrl: p.video, start: tStart, end: tEnd, outputMp4Path: teaserLandscape });
+    }
 
     console.log("\n[3/7] 📐 Recadrage 9:16 (teaser + passage)...");
     cropToVertical({ inputVideo: teaserLandscape, outputVideo: teaserVertical, focusX: p.focusX });
@@ -168,7 +185,7 @@ async function main() {
     userKeywords: p.keywords,
     outputJsonPath: wordsJsonPath,
   });
-  if (!alignment) {
+  if (!alignment && p.video) {
     console.log("      ℹ️  Whisper indisponible — essai des sous-titres auto YouTube...");
     const vtt = downloadAutoSubs({ videoUrl: p.video, lang: whisperLang, outputBase: join(projectDir, "subs") });
     if (vtt) {
@@ -245,7 +262,9 @@ async function main() {
     hook: p.hook || "",
     badge: p.badge || "",
     cta: p.cta || "",
-    source: { youtube_url: p.video, start: formatTimestamp(mainStart), end: formatTimestamp(mainEnd), teaser: p.teaser || null },
+    source: p.video
+      ? { youtube_url: p.video, start: formatTimestamp(mainStart), end: formatTimestamp(mainEnd), teaser: p.teaser || null }
+      : { local_file: p.localVideo, start: formatTimestamp(mainStart), end: formatTimestamp(mainEnd), teaser: p.teaser || null },
     assets: { video: outputMp4Path, thumbnail: thumbPath },
     duration_seconds: totalDuration,
     words: words.length,
