@@ -31,7 +31,7 @@ function parseArgs() {
     teaser: null, hook: null, badge: null, badgeAt: null, cta: null,
     keywords: [], lang: "fr",
     title: "News Reel", description: "", hashtags: "", pinned: "",
-    focusX: 0.5, output: null, packagePath: null, skipRender: false,
+    focusX: 0.5, followSpeaker: true, output: null, packagePath: null, skipRender: false,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -51,6 +51,8 @@ function parseArgs() {
     else if (a === "--hashtags") p.hashtags = args[++i];
     else if (a === "--pinned") p.pinned = args[++i];
     else if (a === "--focus-x") p.focusX = Number(args[++i]);
+    else if (a === "--follow-speaker") p.followSpeaker = true;
+    else if (a === "--no-follow-speaker") p.followSpeaker = false;
     else if (a === "--output" || a === "-o") p.output = args[++i];
     else if (a === "--package") p.packagePath = args[++i];
     else if (a === "--skip-render") p.skipRender = true;
@@ -77,7 +79,9 @@ Usage: node create-news-reel.mjs --video <URL> --start MM:SS --end MM:SS [option
   --description    Description SEO
   --hashtags       Hashtags séparés par des espaces
   --pinned         Commentaire épinglé
-  --focus-x        Cadrage horizontal 0..1 (0.5 = centré, défaut)
+  --focus-x        Cadrage horizontal 0..1 (0.5 = centré, défaut, ignoré si suivi actif)
+  --follow-speaker Suivi caméra du locuteur (défaut: actif)
+  --no-follow-speaker Désactive le suivi, utilise --focus-x statique
   --output, -o     MP4 de sortie (défaut: <slug>.mp4 dans le dossier projet)
   --package        Chemin du package de publication JSON
   --skip-render    Génère le projet HTML sans lancer le rendu MP4
@@ -151,8 +155,8 @@ async function main() {
     }
 
     console.log("\n[3/7] 📐 Recadrage 9:16 (teaser + passage)...");
-    cropToVertical({ inputVideo: teaserLandscape, outputVideo: teaserVertical, focusX: p.focusX });
-    cropToVertical({ inputVideo: mainLandscape, outputVideo: mainVertical, focusX: p.focusX });
+    cropToVertical({ inputVideo: teaserLandscape, outputVideo: teaserVertical, focusX: p.focusX, followSpeaker: p.followSpeaker });
+    cropToVertical({ inputVideo: mainLandscape, outputVideo: mainVertical, focusX: p.focusX, followSpeaker: p.followSpeaker });
     const concatOut = join(projectDir, "clip-concat.mp4");
     const { teaserDuration } = concatTeaser({ teaserVideo: teaserVertical, mainVideo: mainVertical, outputVideo: concatOut });
     teaserEnd = Number(teaserDuration.toFixed(2));
@@ -160,7 +164,7 @@ async function main() {
     console.log(`      ✓ Teaser de ${teaserEnd}s concaténé devant le passage`);
   } else {
     console.log("\n[2/7] 📐 Recadrage 9:16 du passage...");
-    cropToVertical({ inputVideo: mainLandscape, outputVideo: mainVertical, focusX: p.focusX });
+    cropToVertical({ inputVideo: mainLandscape, outputVideo: mainVertical, focusX: p.focusX, followSpeaker: p.followSpeaker });
   }
 
   // ---- Stage 4: audio tracks
